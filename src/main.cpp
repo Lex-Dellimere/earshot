@@ -145,6 +145,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    // capture first because loading the model can take seconds on a cold gpu
+    audioStart(audio, src);
     Transcript tr;
     std::string note;
     Transcriber *transcriber = transcriberStart(&ring, &tr, cfg, &err, &note);
@@ -153,7 +155,6 @@ int main(int argc, char **argv) {
         audioClose(audio);
         return 1;
     }
-    audioStart(audio, src);
     Llm *llm = llmCreate(cfg);
 
     std::string control_err, hotkey_report;
@@ -264,6 +265,19 @@ int main(int argc, char **argv) {
         }
     };
 
+    auto writeNewLines = [&]() {
+        std::lock_guard<std::mutex> lock(tr.mu);
+        for (; raw_file && written_raw < tr.raw.size(); written_raw++)
+            fprintf(raw_file, "[%s] %s\n", clockText(tr.raw[written_raw].time).c_str(), tr.raw[written_raw].text.c_str());
+        if (raw_file) fflush(raw_file);
+        if (!print) return;
+        for (; printed_raw < tr.raw.size(); printed_raw++)
+            printf("[%s] %s\n", clockText(tr.raw[printed_raw].time).c_str(), tr.raw[printed_raw].text.c_str());
+        for (; printed_processed < tr.processed.size(); printed_processed++)
+            printf("» %s\n", tr.processed[printed_processed].c_str());
+        fflush(stdout);
+    };
+
     if (print) fprintf(stderr, "earshot: listening to %s\n", src.label.c_str());
     else terminalInit();
 
@@ -291,19 +305,7 @@ int main(int argc, char **argv) {
                 fflush(processed_file);
             }
         }
-        {
-            std::lock_guard<std::mutex> lock(tr.mu);
-            for (; raw_file && written_raw < tr.raw.size(); written_raw++)
-                fprintf(raw_file, "[%s] %s\n", clockText(tr.raw[written_raw].time).c_str(), tr.raw[written_raw].text.c_str());
-            if (raw_file) fflush(raw_file);
-            if (print) {
-                for (; printed_raw < tr.raw.size(); printed_raw++)
-                    printf("[%s] %s\n", clockText(tr.raw[printed_raw].time).c_str(), tr.raw[printed_raw].text.c_str());
-                for (; printed_processed < tr.processed.size(); printed_processed++)
-                    printf("» %s\n", tr.processed[printed_processed].c_str());
-                fflush(stdout);
-            }
-        }
+        writeNewLines();
         if (print) {
             sleepMs(100);
             continue;
@@ -385,15 +387,19 @@ int main(int argc, char **argv) {
     }
 
     if (!print) terminalRestore();
-    if (clip.file) {
+    bool clip_open = clip.file != nullptr;
+    if (clip_open) {
         clipPump(&clip, &ring);
         clipEnd(&clip);
+    }
+    transcriberStop(transcriber);
+    writeNewLines();
+    if (clip_open) {
         dumpTranscript(&tr, clip.start_time, clip.path);
         fprintf(stderr, "earshot: clip saved %s\n", clip.path.c_str());
     }
     if (raw_file) fclose(raw_file);
     if (processed_file) fclose(processed_file);
-    transcriberStop(transcriber);
     llmDestroy(llm);
     audioClose(audio);
     return 0;

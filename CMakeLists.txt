@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.24)
 project(earshot LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -24,8 +24,22 @@ set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ${EARSHOT_LTO})
 add_compile_options(-ffunction-sections -fdata-sections $<$<COMPILE_LANGUAGE:C>:-fno-asynchronous-unwind-tables>)
 add_link_options(-Wl,--gc-sections -Wl,-O1)
 
-# whisper cpp is vendored and linked statically
 include(FetchContent)
+
+# ggml vulkan needs spirv headers so fetch them when the system has none
+if(EARSHOT_VULKAN)
+    find_package(SPIRV-Headers CONFIG QUIET)
+    if(NOT SPIRV-Headers_FOUND)
+        FetchContent_Declare(SPIRV-Headers
+            GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
+            GIT_TAG vulkan-sdk-1.4.309.0
+            GIT_SHALLOW TRUE
+            OVERRIDE_FIND_PACKAGE)
+        FetchContent_MakeAvailable(SPIRV-Headers)
+    endif()
+endif()
+
+# whisper cpp is vendored and linked statically
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -39,6 +53,9 @@ FetchContent_Declare(whisper
     GIT_TAG v1.9.5
     GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(whisper)
+if(TARGET ggml-vulkan AND TARGET SPIRV-Headers::SPIRV-Headers)
+    target_link_libraries(ggml-vulkan PRIVATE SPIRV-Headers::SPIRV-Headers)
+endif()
 
 add_executable(earshot
     src/main.cpp

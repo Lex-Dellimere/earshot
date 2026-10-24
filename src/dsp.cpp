@@ -24,7 +24,7 @@ struct Frontend {
     float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
 
     bool agc;
-    float envelope = 0.1f;
+    float envelope = 0.01f;
     float gain = 1;
     float release;
 };
@@ -166,7 +166,7 @@ void frontendProcess(Frontend *fe, const int16_t *frames, size_t count, std::vec
             // peak follower with a two second release and at most 26 db of boost
             fe->envelope = fmaxf(fabsf(x), fe->envelope * fe->release);
             float target = fminf(0.5f / fmaxf(fe->envelope, 1e-6f), 20.0f);
-            fe->gain = target < fe->gain ? target : fe->gain + (target - fe->gain) * 0.0002f;
+            fe->gain = target < fe->gain ? target : fe->gain + (target - fe->gain) * 0.0005f;
             x *= fe->gain;
         }
         (*out)[i] = x;

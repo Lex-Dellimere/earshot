@@ -81,7 +81,8 @@ static void runWhisper(Transcriber *t, std::vector<float> pcm, double start) {
 static void worker(Transcriber *t) {
     static int16_t frames[capture_rate / 10 * capture_channels];
     Frontend *fe = frontendCreate(t->cfg);
-    uint64_t cursor = ringTotal(t->ring);
+    // start from the oldest audio so speech captured while the model loaded is kept
+    uint64_t cursor = 0;
     std::vector<float> fresh, pcm;
     size_t fresh_used = 0;
     float noise = 0.01f;
@@ -175,6 +176,8 @@ static void worker(Transcriber *t) {
             fresh_used = 0;
         }
     }
+    // finish the utterance in progress so quitting does not drop it
+    if ((speaking || t->mode == VadMode::Off) && pcm.size() >= (size_t)whisper_rate / 2) runWhisper(t, pcm, start);
     frontendDestroy(fe);
 }
 
@@ -182,6 +185,7 @@ Transcriber *transcriberStart(Ring *ring, Transcript *tr, const Config &cfg, std
     whisper_log_set(quietLog, nullptr);
     whisper_context_params cp = whisper_context_default_params();
     cp.use_gpu = cfg.gpu;
+    cp.gpu_device = cfg.gpu_device;
     std::string path = modelPath(cfg.model);
     whisper_context *ctx = whisper_init_from_file_with_params(path.c_str(), cp);
     if (!ctx) {

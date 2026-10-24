@@ -23,6 +23,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(language, "spoken language code or auto for multilingual models"),
     INTEGER(threads, nullptr),
     FLAG(gpu, "use the gpu when built with cuda or vulkan"),
+    INTEGER(gpu_device, "which gpu to use when there are several counting from 0"),
     TEXT(vad, "speech detection: silero energy or off to transcribe everything like music"),
     NUMBER(vad_threshold, nullptr),
     NUMBER(chunk, "longest audio chunk in seconds sent to whisper"),

@@ -33,10 +33,45 @@ CMake options (all `-D…=ON/OFF`):
 - `EARSHOT_STRIP` (on): strips symbols after linking.
 - `EARSHOT_LTO` (on for Linux, off for Windows): link-time optimisation.
 - `EARSHOT_NATIVE` (on for Linux, off for Windows): `-march=native`. Turn it off for a binary you'll copy to other machines.
-- `EARSHOT_CUDA` / `EARSHOT_VULKAN`: run whisper on the GPU. CUDA needs `nvcc`; Vulkan needs `glslc`.
+- `EARSHOT_VULKAN` / `EARSHOT_CUDA`: run whisper on the GPU. See [GPU](#gpu).
 
 MinGW GCC 14 hits an internal compiler error in ggml's SIMD code under LTO or
 AVX-512, so Windows builds default to an AVX2 baseline without LTO.
+
+## GPU
+
+The default build runs whisper on the CPU, so it works on every machine. For
+GPU speed, build with Vulkan. One Vulkan binary runs on AMD, Intel and NVIDIA,
+on Linux and Windows:
+
+```sh
+sudo apt install glslc            # shader compiler, needed only to build
+cmake -B build-vk -DEARSHOT_VULKAN=ON && cmake --build build-vk -j
+```
+
+SPIR-V headers are fetched automatically if the system doesn't have them. On
+Windows, use MSYS2 with `mingw-w64-x86_64-vulkan-devel` and
+`mingw-w64-x86_64-shaderc`.
+
+If no Vulkan driver is found at runtime, the same binary falls back to the
+CPU. With several GPUs, pick one with `gpu_device` in the config. Devices are
+counted from 0, in the order Vulkan lists them; integrated GPUs often come
+first. The Vulkan binary is about 37 MB because ggml embeds its compiled GPU
+shaders, which is why it's opt-in.
+
+`EARSHOT_CUDA=ON` is NVIDIA only and needs the CUDA toolkit. On the 4070 below
+it beats Vulkan, but Vulkan already gives far more speed than live
+transcription needs.
+
+Time to encode one 30 s window, the main cost per chunk:
+
+| model | CPU (Ryzen, 8 threads) | AMD Radeon 780M iGPU | RTX 4070 laptop |
+|---|---|---|---|
+| base.en | 386 ms | 58 ms | 6 ms |
+| small.en-q5_1 | 1835 ms | 202 ms | 17 ms |
+
+The first run after installing compiles GPU shaders, which can take several
+seconds. earshot captures from the start and catches up, so no speech is lost.
 
 ## Use
 

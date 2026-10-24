@@ -19,8 +19,9 @@ struct Config {
     std::string language = "en";
     int threads = 8;
     bool gpu = true;
+    int gpu_device = 0;
     std::string vad = "silero";
-    float vad_threshold = 0.5f;
+    float vad_threshold = 0.35f;
     float chunk = 8;
     bool focus = true;
     float highpass = 100;
