@@ -85,6 +85,8 @@ struct App {
     float level[channel_count] = {};
     Overlay overlay = Overlay::None;
     bool editing = false, message_error = false;
+    bool editing_setting = false;  // the edit line belongs to a setting rather than the instruction
+    int setting = 1;
     std::string edit, message, model_name;
     double message_until = 0, last_draw = 0;
 
@@ -105,6 +107,8 @@ struct App {
     void dumpTranscript(double since, const std::string &wav);
     void command(const std::string &cmd);
     void key(int key, const std::string &text);
+    void settingsKey(int key);
+    void applySetting(const Setting &s, const std::string &before);
     void runLlm(bool force);
     void takeLlmResults();
     void writeNewLines();
@@ -435,24 +439,97 @@ void App::flushAll() {
 
 // most useful first because the footer shows only what fits
 std::vector<std::pair<std::string, std::string>> App::help(bool wide) {
+    if (overlay == Overlay::Settings)
+        return { { "↑↓", "choose" }, { "←→", "change" }, { "Enter", "edit" }, { "Esc", "back" } };
     return {
-        { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_clip, "clip" },
-        { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_ai, "ai model" }, { cfg.key_model, "whisper model" }, { cfg.key_instruction, "instruction" },
-        { cfg.key_process, "process" }, { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" },
-        { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
+        { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_settings, "settings" },
+        { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_ai, "ai model" },
+        { cfg.key_model, "whisper model" }, { cfg.key_instruction, "instruction" }, { cfg.key_process, "process" },
+        { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" }, { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
     };
+}
+
+// saves a changed setting and applies it now when that is possible
+void App::applySetting(const Setting &s, const std::string &before) {
+    std::string key = s.key;
+    std::string value = configGet(cfg, key);
+    if (value == before) return;
+    if (key == "model" && !transcriberSetModel(transcriber, cfg.model)) {
+        configApply(&cfg, key, before);
+        return say("still loading the last model", true);
+    }
+    configSet(config_path, s.key, value);
+    if (key == "source" || key == "mic") {
+        int ch = key == "mic" ? You : Them;
+        Source found;
+        if (value.empty()) {
+            audioStop(audio, ch);
+        } else if (findSource(audioSources(audio), value, &found)) {
+            audioStart(audio, ch, found);
+            transcriberReset(transcriber, ch);
+        } else {
+            return say("saved, but nothing matches " + value + " right now", true);
+        }
+    } else if (key == "model") {
+        model_name = cfg.model.substr(cfg.model.find_last_of("/\\") + 1);
+    } else if (key == "color") {
+        tuiSetColor(cfg.color);
+    } else if (key == "transcript_dir" && !raw_file) {
+        Source them;
+        transcript_path = expandPath(cfg.transcript_dir) + "/" + session + "_" + fileTag(active(Them, &them) ? them.label : "earshot") + ".txt";
+    } else if (key == "language" || key == "beam" || key == "vad_threshold" || key == "context" || key == "focus" ||
+               key == "highpass" || key == "normalize" || key == "threads" || key == "chunk") {
+        transcriberConfigure(transcriber, cfg);
+    }
+    say(s.restart ? "saved, applies the next time earshot starts" : "saved", false);
+}
+
+void App::settingsKey(int key) {
+    const std::vector<Setting> &list = settingsList();
+    auto move = [&](int dir, int count) {
+        for (int moved = 0; moved < count;) {
+            int next = setting + dir;
+            if (next < 0 || next >= (int)list.size()) break;
+            setting = next;
+            if (list[setting].kind != Setting::Header) moved++;
+        }
+        while (list[setting].kind == Setting::Header && setting + 1 < (int)list.size()) setting++;
+    };
+    const Setting &s = list[setting];
+    std::string before = configGet(cfg, s.key);
+    if (key == KeyEsc || key == keyCode(cfg.key_settings)) overlay = Overlay::None;
+    else if (key == 3) quit = true;
+    else if (key == KeyUp) move(-1, 1);
+    else if (key == KeyDown) move(1, 1);
+    else if (key == KeyPageUp) move(-1, 10);
+    else if (key == KeyPageDown) move(1, 10);
+    else if ((key == KeyLeft || key == KeyRight) && settingStep(&cfg, s, key == KeyLeft ? -1 : 1)) applySetting(s, before);
+    else if (key == KeyEnter) {
+        if (s.kind == Setting::Text || s.kind == Setting::Model) {
+            editing = editing_setting = true;
+            edit = before;
+        } else if (settingStep(&cfg, s, 1)) {
+            applySetting(s, before);
+        }
+    }
 }
 
 void App::key(int key, const std::string &text) {
     if (editing) {
-        if (key == KeyEnter) {
+        if (key == KeyEnter && editing_setting) {
+            const Setting &s = settingsList()[setting];
+            std::string before = configGet(cfg, s.key);
+            configApply(&cfg, s.key, edit);
+            editing = editing_setting = false;
+            applySetting(s, before);
+        } else if (key == KeyEnter) {
             cfg.instruction = edit;
             configSet(config_path, "instruction", edit);
             editing = false;
             std::lock_guard<std::mutex> lock(tr.mu);
             llm_upto = tr.raw.size() > 6 ? tr.raw.size() - 6 : 0;
         } else if (key == KeyEsc) {
-            editing = false;
+            editing = editing_setting = false;
         } else if (key == KeyBackspace) {
             while (!edit.empty() && ((unsigned char)edit.back() & 0xC0) == 0x80) edit.pop_back();
             if (!edit.empty()) edit.pop_back();
@@ -467,6 +544,7 @@ void App::key(int key, const std::string &text) {
         overlay = Overlay::None;
         return;
     }
+    if (overlay == Overlay::Settings) return settingsKey(key);
     bool wide = tuiWide();
     if (key == 3) quit = true;
     else if (key == '?') overlay = Overlay::Help;
@@ -484,6 +562,8 @@ void App::key(int key, const std::string &text) {
     } else if (key == keyCode(cfg.key_instruction)) {
         editing = true;
         edit = cfg.instruction;
+    } else if (key == keyCode(cfg.key_settings)) {
+        overlay = Overlay::Settings;
     } else {
         const std::pair<std::string, const char *> keys[] = {
             { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" }, { cfg.key_play, "play" },
@@ -537,6 +617,13 @@ void App::draw() {
     v.help = help(tuiWide());
     v.overlay = overlay;
     v.timestamps = cfg.timestamps;
+    if (overlay == Overlay::Settings) {
+        for (const Setting &st : settingsList())
+            v.settings.push_back({ st.kind == Setting::Header, st.label, st.kind == Setting::Header ? "" : settingDisplay(cfg, st), st.restart });
+        v.settings_selected = setting;
+        v.settings_help = settingsList()[setting].help;
+        v.editing_setting = editing_setting;
+    }
     v.labels = labels();
     v.transcript_path = !cfg.save_transcript ? "not saved" : raw_file ? shortPath(transcript_path) : "saving to " + shortPath(expandPath(cfg.transcript_dir));
     tuiDraw(v);

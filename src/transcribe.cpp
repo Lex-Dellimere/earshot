@@ -22,11 +22,14 @@ struct Worker {
     std::thread thread;
     std::atomic<bool> reset{ false };
     std::atomic<bool> pending{ false };  // inside an utterance or transcribing one
+    std::atomic<bool> reconfigure{ false };
+    Config cfg;  // the worker's own copy so settings can change while it runs
     std::string last_text;
 };
 
 struct Transcriber {
     Transcript *tr;
+    std::mutex cfg_mu;
     Config cfg;
     VadMode mode;
     whisper_context *ctx = nullptr;
@@ -100,12 +103,12 @@ static bool echoesPrompt(const std::string &text, const std::string &prompt) {
     return found * 5 >= mine.size() * 4;
 }
 
-static std::string decode(Transcriber *t, const std::vector<float> &pcm, const char *prompt) {
-    bool beam = t->cfg.beam > 1;
+static std::string decode(Transcriber *t, const Config &c, const std::vector<float> &pcm, const char *prompt) {
+    bool beam = c.beam > 1;
     whisper_full_params p = whisper_full_default_params(beam ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
-    if (beam) p.beam_search.beam_size = t->cfg.beam;
-    p.n_threads = t->cfg.threads;
-    p.language = t->cfg.language.c_str();
+    if (beam) p.beam_search.beam_size = c.beam;
+    p.n_threads = c.threads;
+    p.language = c.language.c_str();
     p.no_context = true;
     p.no_timestamps = true;
     p.suppress_nst = true;
@@ -125,11 +128,11 @@ static std::string decode(Transcriber *t, const std::vector<float> &pcm, const c
 
 static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
     Transcriber *t = w->t;
-    if (t->cfg.normalize) normalizeChunk(&pcm);
-    bool prompted = t->cfg.context && !w->last_text.empty();
+    if (w->cfg.normalize) normalizeChunk(&pcm);
+    bool prompted = w->cfg.context && !w->last_text.empty();
     t->busy++;
-    std::string text = decode(t, pcm, prompted ? w->last_text.c_str() : nullptr);
-    if (prompted && echoesPrompt(text, w->last_text)) text = decode(t, pcm, nullptr);
+    std::string text = decode(t, w->cfg, pcm, prompted ? w->last_text.c_str() : nullptr);
+    if (prompted && echoesPrompt(text, w->last_text)) text = decode(t, w->cfg, pcm, nullptr);
     t->busy--;
     if (text.empty()) return;
     w->last_text = text;
@@ -140,9 +143,13 @@ static void worker(Worker *w) {
     Transcriber *t = w->t;
     std::vector<int16_t> frames(capture_rate / 10 * capture_channels);
     // a mic is mono in practice so centre extraction would only cost time
-    Config fcfg = t->cfg;
-    if (w->channel == You) fcfg.focus = false;
-    Frontend *fe = frontendCreate(fcfg);
+    auto snapshot = [w, t] {
+        std::lock_guard<std::mutex> lock(t->cfg_mu);
+        w->cfg = t->cfg;
+        if (w->channel == You) w->cfg.focus = false;
+    };
+    snapshot();
+    Frontend *fe = frontendCreate(w->cfg);
     // start from the oldest audio so speech captured while the model loaded is kept
     uint64_t cursor = 0;
     std::vector<float> fresh, pcm;
@@ -152,12 +159,16 @@ static void worker(Worker *w) {
     int silence_ms = 0;
     double fresh_time = 0;  // wall time of the first fresh sample from its ring position
     double start = 0;       // wall time of the first pcm sample
-    const size_t max_samples = (size_t)(t->cfg.chunk * whisper_rate);
-
     while (!t->stop) {
+        if (w->reconfigure.exchange(false)) {
+            snapshot();
+            frontendDestroy(fe);
+            fe = frontendCreate(w->cfg);
+        }
+        const size_t max_samples = (size_t)(w->cfg.chunk * whisper_rate);
         if (w->reset.exchange(false)) {
             frontendDestroy(fe);
-            fe = frontendCreate(fcfg);
+            fe = frontendCreate(w->cfg);
             cursor = ringTotal(w->ring);
             fresh.clear();
             fresh_used = 0;
@@ -204,7 +215,7 @@ static void worker(Worker *w) {
 
             bool voiced;
             if (probs) {
-                voiced = probs[k] > t->cfg.vad_threshold;
+                voiced = probs[k] > w->cfg.vad_threshold;
             } else {
                 float e = 0;
                 for (int i = 0; i < vad_window; i++) e += win[i] * win[i];
@@ -308,7 +319,12 @@ bool transcriberSetModel(Transcriber *t, const std::string &model) {
     t->load = ModelLoad::Loading;
     t->loader = std::thread([t, model] {
         std::string err;
-        whisper_context *ctx = loadModel(t->cfg, model, &err);
+        Config cfg;
+        {
+            std::lock_guard<std::mutex> lock(t->cfg_mu);
+            cfg = t->cfg;
+        }
+        whisper_context *ctx = loadModel(cfg, model, &err);
         if (!ctx) {
             std::lock_guard<std::mutex> lock(t->load_mu);
             t->load_error = err;
@@ -325,6 +341,15 @@ bool transcriberSetModel(Transcriber *t, const std::string &model) {
         t->load = ModelLoad::Ready;
     });
     return true;
+}
+
+// settings changed while running reach each worker before its next chunk
+void transcriberConfigure(Transcriber *t, const Config &cfg) {
+    {
+        std::lock_guard<std::mutex> lock(t->cfg_mu);
+        t->cfg = cfg;
+    }
+    for (Worker &w : t->workers) w.reconfigure = true;
 }
 
 // a failure is reported once and then reads as ready again with the old model

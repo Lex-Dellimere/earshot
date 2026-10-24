@@ -67,6 +67,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(key_instruction, nullptr),
     TEXT(key_ai, nullptr),
     TEXT(key_model, nullptr),
+    TEXT(key_settings, nullptr),
     TEXT(key_process, nullptr),
     TEXT(key_clear, nullptr),
     TEXT(key_timestamps, nullptr),
@@ -204,6 +205,13 @@ bool configApply(Config *cfg, const std::string &key, const std::string &value) 
         return true;
     }
     return false;
+}
+
+std::string configGet(const Config &cfg, const std::string &key) {
+    Config copy = cfg;
+    for (const Field &field : fieldsOf(&copy))
+        if (key == field.key) return fieldValue(field);
+    return "";
 }
 
 bool configLoad(Config *cfg, const std::string &path, std::string *err) {

@@ -62,6 +62,7 @@ struct Config {
     std::string key_instruction = "i";
     std::string key_ai = "a";
     std::string key_model = "w";
+    std::string key_settings = "s";
     std::string key_process = "p";
     std::string key_clear = "x";
     std::string key_timestamps = "t";
@@ -75,6 +76,7 @@ struct Config {
 std::string configPath();
 bool configLoad(Config *cfg, const std::string &path, std::string *err);
 bool configApply(Config *cfg, const std::string &key, const std::string &value);
+std::string configGet(const Config &cfg, const std::string &key);
 void configSet(const std::string &path, const char *key, const std::string &value);
 bool configSave(const Config &cfg, const std::string &path);
 std::string expandPath(const std::string &path);
@@ -162,6 +164,7 @@ void transcriberReset(Transcriber *t, int channel);
 bool transcriberBusy(Transcriber *t);
 bool transcriberPending(Transcriber *t, int channel);
 bool transcriberSetModel(Transcriber *t, const std::string &model);
+void transcriberConfigure(Transcriber *t, const Config &cfg);
 enum class ModelLoad { Ready, Loading, Failed };
 ModelLoad transcriberModelState(Transcriber *t, std::string *error);
 void transcriberStop(Transcriber *t);
@@ -253,6 +256,23 @@ bool controlSend(const std::string &cmd);
 void hotkeysStart(const std::vector<std::pair<std::string, std::string>> &binds, std::string *report);
 bool pollCommand(std::string *cmd);
 
+// settings screen
+
+struct Setting {
+    enum Kind { Header, Toggle, Choice, Number, Text, Model, Slot };
+    const char *key;
+    const char *label;
+    const char *help;
+    Kind kind;
+    float step = 0, min = 0, max = 0;
+    bool restart = false;  // only takes effect when earshot starts
+    std::vector<std::string> choices;
+};
+
+const std::vector<Setting> &settingsList();
+std::string settingDisplay(const Config &cfg, const Setting &s);
+bool settingStep(Config *cfg, const Setting &s, int dir);
+
 // app
 
 int runApp(const Config &cfg, const std::string &config_path, bool print);
@@ -265,7 +285,13 @@ enum Key {
     KeyUp = 1000, KeyDown, KeyLeft, KeyRight, KeyPageUp, KeyPageDown, KeyHome, KeyEnd, KeyDelete, KeyBackTab,
 };
 
-enum class Overlay { None, Sources, Help };
+enum class Overlay { None, Sources, Help, Settings };
+
+struct SettingLine {
+    bool header;
+    std::string label, value;
+    bool restart;
+};
 
 struct View {
     const std::vector<Source> *sources;
@@ -292,6 +318,10 @@ struct View {
     bool timestamps;
     bool labels;
     bool model_loading;
+    std::vector<SettingLine> settings;
+    int settings_selected = 0;
+    std::string settings_help;
+    bool editing_setting = false;
     std::string transcript_path;
 };
 

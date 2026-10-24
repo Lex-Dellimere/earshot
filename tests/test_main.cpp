@@ -218,7 +218,42 @@ static void testAiParse() {
     CHECK_EQ(c.label, std::string("My Model.Q4_K_M"));
 }
 
+static void testSettings() {
+    Config cfg;
+    const std::vector<Setting> &list = settingsList();
+    auto find = [&](const char *key) -> const Setting & {
+        for (const Setting &s : list)
+            if (std::string(s.key) == key) return s;
+        return list[0];
+    };
+    // every row names a real config key
+    for (const Setting &s : list)
+        if (s.kind != Setting::Header) CHECK(configApply(&cfg, s.key, configGet(cfg, s.key)));
+    CHECK(settingStep(&cfg, find("beam"), 1));
+    CHECK_EQ(cfg.beam, 2);
+    for (int i = 0; i < 20; i++) settingStep(&cfg, find("beam"), 1);
+    CHECK_EQ(cfg.beam, 8);
+    CHECK(settingStep(&cfg, find("timestamps"), 1));
+    CHECK(cfg.timestamps);
+    CHECK(settingStep(&cfg, find("vad"), 1));
+    CHECK_EQ(cfg.vad, std::string("energy"));
+    settingStep(&cfg, find("vad"), -1);
+    settingStep(&cfg, find("vad"), -1);
+    CHECK_EQ(cfg.vad, std::string("off"));
+    // the ai slot skips empty slots and wraps through off
+    cfg.ai = 3;
+    settingStep(&cfg, find("ai"), 1);
+    CHECK_EQ(cfg.ai, 0);
+    settingStep(&cfg, find("ai"), -1);
+    CHECK_EQ(cfg.ai, 3);
+    CHECK_EQ(settingDisplay(cfg, find("ai")), std::string("3: llama3.2"));
+    CHECK(!settingStep(&cfg, find("instruction"), 1));
+    cfg.mic = "";
+    CHECK_EQ(settingDisplay(cfg, find("mic")), std::string("off"));
+}
+
 int main() {
+    testSettings();
     testMigration();
     testAiParse();
     testTranscript();

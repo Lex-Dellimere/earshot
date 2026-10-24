@@ -1,5 +1,6 @@
 // ansi terminal ui shared by linux and windows
 #include "earshot.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -343,6 +344,58 @@ static void drawHelp(const View &v, int col, int top, int width, int rows) {
     drawText(top + 1, col, width, rows - 1, lines, 0, "");
 }
 
+// settings rows with the selected one's help and any edit line kept at the bottom of the pane
+static void drawSettings(const View &v, int col, int top, int width, int rows) {
+    moveTo(top, col);
+    screen += std::string(paint(bold)) + paint(cyan);
+    cell(" Settings" + std::string(paint(normal)) + paint(gray) + "  saved as you go to the config file", width);
+    screen += paint(reset);
+    std::vector<std::string> help;
+    if (v.editing_setting) {
+        wrapText(v.edit + "▏", width - 3, &help);
+        if (help.size() > 2) help.erase(help.begin(), help.end() - 2);
+        for (std::string &h : help) h = std::string(paint(yellow)) + h;
+        help.insert(help.begin(), std::string(paint(gray)) + "Enter save  Esc cancel  Ctrl-U clear");
+    } else {
+        wrapText(v.settings_help, width - 3, &help);
+        if (help.size() > 2) help.resize(2);
+        for (std::string &h : help) h = std::string(paint(gray)) + h;
+        if (v.settings_selected < (int)v.settings.size() && v.settings[v.settings_selected].restart)
+            help.push_back(std::string(paint(yellow)) + "applies the next time earshot starts");
+    }
+    int list_rows = rows - 1 - (int)help.size() - 1;
+    int first = v.settings_selected - list_rows / 2;
+    if (first + list_rows > (int)v.settings.size()) first = (int)v.settings.size() - list_rows;
+    if (first < 0) first = 0;
+    int label_w = std::min(26, width / 2);
+    int row = top + 1;
+    for (int i = first; i < (int)v.settings.size() && row < top + 1 + list_rows; i++, row++) {
+        const SettingLine &l = v.settings[i];
+        moveTo(row, col);
+        if (l.header) {
+            screen += std::string(paint(bold)) + paint(cyan);
+            cell(" " + l.label, width);
+            screen += paint(reset);
+            continue;
+        }
+        std::string label = (i == v.settings_selected ? " › " : "   ") + l.label;
+        while (textWidth(label) < label_w) label += " ";
+        const char *tint = l.value == "on" ? green : l.value == "off" || l.value == "empty" ? gray : fg_default;
+        if (i == v.settings_selected) screen += paint(inverse);
+        cell(label + paint(tint) + l.value + (l.restart ? std::string(paint(gray)) + " ↻" : ""), width);
+        screen += paint(reset);
+    }
+    for (; row < top + rows - (int)help.size(); row++) {
+        moveTo(row, col);
+        cell("", width);
+    }
+    for (const std::string &h : help) {
+        moveTo(row++, col);
+        cell("  " + h, width);
+        screen += paint(reset);
+    }
+}
+
 static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     int row = top;
     moveTo(row++, rx);
@@ -453,6 +506,7 @@ void tuiDraw(const View &v) {
         rw = w - left - 1;
     }
     if (v.overlay == Overlay::Help) drawHelp(v, rx, top, rw, rows);
+    else if (v.overlay == Overlay::Settings) drawSettings(v, rx, top, rw, rows);
     else if (v.overlay == Overlay::Sources && !side) drawSources(v, rx, top, rw, rows);
     else drawMain(v, rx, rw, top, bottom + 1);
 
