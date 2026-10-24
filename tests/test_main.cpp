@@ -177,7 +177,50 @@ static void testTranscript() {
     CHECK_EQ(e[1].text, std::string("no that is not what I said"));
 }
 
+static void testMigration() {
+    // a config from before ai slots keeps its model and gets the new default instruction
+    std::string path = scratch("old.conf");
+    FILE *f = fopen(path.c_str(), "w");
+    fputs("# earshot config\nmodel = small.en\nout_dir = ~/clips\ninstruction = \nllm_model = qwen2.5:3b\n", f);
+    fclose(f);
+    Config cfg;
+    std::string err;
+    CHECK(configLoad(&cfg, path, &err));
+    CHECK_EQ(cfg.model, std::string("small.en"));
+    CHECK_EQ(cfg.clip_dir, std::string("~/clips"));
+    CHECK_EQ(cfg.ai_slots[0], std::string("qwen2.5:3b"));
+    CHECK_EQ(cfg.instruction, std::string(default_instruction));
+    Config again;
+    err.clear();
+    CHECK(configLoad(&again, path, &err));  // the rewritten file has no unknown keys
+    CHECK(err.empty());
+    CHECK_EQ(again.ai_slots[0], std::string("qwen2.5:3b"));
+    CHECK_EQ(again.instruction, std::string(default_instruction));
+    // a new style file keeps an empty instruction as off
+    configSet(path, "instruction", "");
+    Config off;
+    CHECK(configLoad(&off, path, &err));
+    CHECK(off.instruction.empty());
+    remove(path.c_str());
+}
+
+static void testAiParse() {
+    AiModel a = aiParse("gemma3:4b", "http://local/v1");
+    CHECK_EQ(a.name, std::string("gemma3:4b"));
+    CHECK_EQ(a.url, std::string("http://local/v1"));
+    CHECK(a.gguf.empty());
+    AiModel b = aiParse("gpt-4o-mini @ https://api.example.com/v1/chat/completions", "http://local/v1");
+    CHECK_EQ(b.name, std::string("gpt-4o-mini"));
+    CHECK_EQ(b.url, std::string("https://api.example.com/v1/chat/completions"));
+    AiModel c = aiParse("/models/My Model.Q4_K_M.gguf", "http://local/v1");
+    CHECK_EQ(c.gguf, std::string("/models/My Model.Q4_K_M.gguf"));
+    CHECK_EQ(c.name, std::string("earshot-my-model.q4_k_m"));
+    CHECK_EQ(c.label, std::string("My Model.Q4_K_M"));
+}
+
 int main() {
+    testMigration();
+    testAiParse();
     testTranscript();
     testText();
     testMeter();

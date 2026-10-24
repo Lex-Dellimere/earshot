@@ -96,6 +96,8 @@ struct App {
     bool active(int ch, Source *out = nullptr);
     bool labels();
     std::string label(int ch);
+    bool aiOn();
+    AiModel aiModel();
     std::string lineText(const Line &l, bool time);
     std::string paragraphText(const Paragraph &p);
     bool openTranscript();
@@ -132,6 +134,14 @@ bool App::labels() {
 
 std::string App::label(int ch) {
     return ch == You ? cfg.you_label : cfg.them_label;
+}
+
+bool App::aiOn() {
+    return cfg.ai >= 1 && cfg.ai <= 9 && !cfg.ai_slots[cfg.ai - 1].empty() && !cfg.instruction.empty();
+}
+
+AiModel App::aiModel() {
+    return aiParse(cfg.ai >= 1 && cfg.ai <= 9 ? cfg.ai_slots[cfg.ai - 1] : "", cfg.llm_url);
 }
 
 // a line as written to files and stdout with the speaker named when both channels are on
@@ -285,7 +295,17 @@ void App::command(const std::string &cmd) {
         playbackStart(audio, std::move(frames));
     } else if (cmd == "process") {
         if (cfg.instruction.empty()) say("set an instruction first", true);
+        else if (!aiOn()) say("the ai is off: press " + cfg.key_ai + " to pick a model", true);
         else runLlm(true);
+    } else if (cmd == "ai") {
+        // steps through the filled slots and then off
+        int next = cfg.ai;
+        do next = (next + 1) % 10;
+        while (next != 0 && cfg.ai_slots[next - 1].empty());
+        cfg.ai = next;
+        configSet(config_path, "ai", std::to_string(next));
+        if (next == 0) say("ai off", false);
+        else say("ai " + std::to_string(next) + ": " + aiModel().label, false);
     } else if (cmd == "timestamps") {
         cfg.timestamps = !cfg.timestamps;
         configSet(config_path, "timestamps", cfg.timestamps ? "true" : "false");
@@ -314,7 +334,7 @@ void App::command(const std::string &cmd) {
 }
 
 void App::runLlm(bool force) {
-    if (cfg.instruction.empty()) return;
+    if (!aiOn()) return;
     std::string text, context;
     size_t upto;
     {
@@ -327,7 +347,7 @@ void App::runLlm(bool force) {
     }
     if (!force && nowSeconds() - llm_last < cfg.llm_every) return;
     if (context.size() > 1500) context = context.substr(context.size() - 1500);
-    if (text.empty() || llmSubmit(llm, cfg.instruction, context, text)) {
+    if (text.empty() || llmSubmit(llm, aiModel(), cfg.instruction, context, text)) {
         llm_upto = upto;
         llm_last = nowSeconds();
     }
@@ -405,7 +425,7 @@ void App::flushAll() {
 std::vector<std::pair<std::string, std::string>> App::help(bool wide) {
     return {
         { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_clip, "clip" },
-        { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_instruction, "instruction" },
+        { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_ai, "ai model" }, { cfg.key_instruction, "instruction" },
         { cfg.key_process, "process" }, { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" },
         { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
     };
@@ -456,7 +476,7 @@ void App::key(int key, const std::string &text) {
         const std::pair<std::string, const char *> keys[] = {
             { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" }, { cfg.key_play, "play" },
             { cfg.key_process, "process" }, { cfg.key_clear, "clear" }, { cfg.key_quit, "quit" },
-            { cfg.key_timestamps, "timestamps" }, { cfg.key_folder, "folder" },
+            { cfg.key_timestamps, "timestamps" }, { cfg.key_folder, "folder" }, { cfg.key_ai, "ai" },
         };
         for (const auto &[name, cmd] : keys)
             if (key == keyCode(name)) command(cmd);
@@ -492,7 +512,8 @@ void App::draw() {
     v.instruction = cfg.instruction;
     v.editing = editing;
     v.edit = edit;
-    v.llm = cfg.instruction.empty() ? LlmState::Off : llmState(llm);
+    v.llm = aiOn() ? llmState(llm) : LlmState::Off;
+    v.ai = aiOn() ? aiModel().label : "";
     v.tr = &tr;
     v.scroll = scroll;
     v.message = message;

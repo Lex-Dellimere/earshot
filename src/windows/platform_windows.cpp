@@ -31,7 +31,13 @@ bool writePrivateFile(const std::string &path, const std::string &data) {
     return ok;
 }
 
+// plain rename will not overwrite on windows
+bool replaceFile(const std::string &from, const std::string &to) {
+    return MoveFileExA(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
 void sleepMs(int ms) { Sleep(ms); }
+int processId() { return (int)GetCurrentProcessId(); }
 
 double nowSeconds() {
     FILETIME ft;

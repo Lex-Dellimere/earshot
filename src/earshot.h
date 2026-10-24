@@ -17,6 +17,9 @@ constexpr int channel_count = 2;
 
 // config
 
+constexpr const char *default_instruction =
+    "Fix words that were clearly misheard and add punctuation. Keep the speaker's own wording and the speaker names.";
+
 struct Config {
     std::string source = "system";
     std::string mic = "mic";
@@ -44,9 +47,10 @@ struct Config {
     float replay = 30;
     float playback = 10;
 
-    std::string instruction;
+    int ai = 1;
+    std::string ai_slots[9] = { "gemma3:4b", "qwen2.5:3b", "llama3.2" };
+    std::string instruction = default_instruction;
     std::string llm_url = "http://127.0.0.1:11434/v1/chat/completions";
-    std::string llm_model = "gemma3:4b";
     float llm_every = 20;
     std::string llm_start = "ollama serve";
 
@@ -55,6 +59,7 @@ struct Config {
     std::string key_replay = "r";
     std::string key_play = "space";
     std::string key_instruction = "i";
+    std::string key_ai = "a";
     std::string key_process = "p";
     std::string key_clear = "x";
     std::string key_timestamps = "t";
@@ -69,6 +74,7 @@ std::string configPath();
 bool configLoad(Config *cfg, const std::string &path, std::string *err);
 bool configApply(Config *cfg, const std::string &key, const std::string &value);
 void configSet(const std::string &path, const char *key, const std::string &value);
+bool configSave(const Config &cfg, const std::string &path);
 std::string expandPath(const std::string &path);
 std::string shortPath(const std::string &path);
 std::string modelPath(const std::string &name);
@@ -149,12 +155,22 @@ void transcriberDrain(Transcriber *t);
 
 // llm
 
-enum class LlmState { Off, Idle, Starting, Working, Error };
+enum class LlmState { Off, Idle, Starting, Importing, Working, Error };
+
+// an ai slot is an ollama model name, a name @ an openai compatible url, or a path to a gguf file
+struct AiModel {
+    std::string name;  // what the endpoint calls it
+    std::string url;
+    std::string gguf;  // a local file imported into ollama on first use
+    std::string label; // short name for the tui
+};
+
+AiModel aiParse(const std::string &slot, const std::string &default_url);
 
 struct Llm;
 Llm *llmCreate(const Config &cfg);
 void llmDestroy(Llm *llm);
-bool llmSubmit(Llm *llm, const std::string &instruction, const std::string &context, const std::string &text);
+bool llmSubmit(Llm *llm, const AiModel &model, const std::string &instruction, const std::string &context, const std::string &text);
 LlmState llmState(Llm *llm);
 bool llmTakeResult(Llm *llm, std::string *text, bool *ok);
 
@@ -191,7 +207,9 @@ std::string dataDir();
 std::string tempDir();
 void makeDirs(const std::string &path);
 bool writePrivateFile(const std::string &path, const std::string &data);
+bool replaceFile(const std::string &from, const std::string &to);
 void sleepMs(int ms);
+int processId();
 double nowSeconds();
 
 void terminalInit();
@@ -238,6 +256,7 @@ struct View {
     bool whisper_busy;
     std::string model;
     std::string instruction;
+    std::string ai;
     bool editing;
     std::string edit;
     LlmState llm;

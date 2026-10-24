@@ -40,7 +40,12 @@ bool writePrivateFile(const std::string &path, const std::string &data) {
     return ok;
 }
 
+bool replaceFile(const std::string &from, const std::string &to) {
+    return rename(from.c_str(), to.c_str()) == 0;
+}
+
 void sleepMs(int ms) { usleep(ms * 1000); }
+int processId() { return (int)getpid(); }
 
 double nowSeconds() {
     timespec ts;

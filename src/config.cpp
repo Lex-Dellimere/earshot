@@ -17,7 +17,7 @@ struct Field {
 #define FLAG(k, c) { #k, FieldType::Flag, &cfg->k, c }
 
 static std::vector<Field> fieldsOf(Config *cfg) {
-    return {
+    std::vector<Field> fields = {
     TEXT(source, "what you hear: system or part of an app or device name"),
     TEXT(mic, "your voice: mic for the default input, part of a device name, or empty for off"),
     TEXT(them_label, "names shown before each channel's lines when both are on"),
@@ -44,9 +44,18 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     NUMBER(replay, "length in seconds of an instant replay save"),
     NUMBER(playback, "seconds played back by the play key"),
 
+    INTEGER(ai, "which ai slot is used, 1 to 9, or 0 for off; the a key switches while running"),
+    TEXT(ai_slots[0], "ai slots: an ollama model name, a name @ any openai compatible url, or a path to a .gguf file"),
+    TEXT(ai_slots[1], nullptr),
+    TEXT(ai_slots[2], nullptr),
+    TEXT(ai_slots[3], nullptr),
+    TEXT(ai_slots[4], nullptr),
+    TEXT(ai_slots[5], nullptr),
+    TEXT(ai_slots[6], nullptr),
+    TEXT(ai_slots[7], nullptr),
+    TEXT(ai_slots[8], nullptr),
     TEXT(instruction, "what the ai does with the transcript or empty to turn it off"),
-    TEXT(llm_url, "any openai compatible chat completions endpoint"),
-    TEXT(llm_model, nullptr),
+    TEXT(llm_url, "endpoint for slots that name no url"),
     NUMBER(llm_every, "seconds between ai passes"),
     TEXT(llm_start, "command started when the endpoint is down and stopped on exit"),
 
@@ -55,6 +64,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(key_replay, nullptr),
     TEXT(key_play, nullptr),
     TEXT(key_instruction, nullptr),
+    TEXT(key_ai, nullptr),
     TEXT(key_process, nullptr),
     TEXT(key_clear, nullptr),
     TEXT(key_timestamps, nullptr),
@@ -64,6 +74,11 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(hotkey_replay, nullptr),
     TEXT(hotkey_play, nullptr),
     };
+    static const char *slot_keys[9] = { "ai1", "ai2", "ai3", "ai4", "ai5", "ai6", "ai7", "ai8", "ai9" };
+    for (Field &f : fields)
+        for (int i = 0; i < 9; i++)
+            if (f.ptr == &cfg->ai_slots[i]) f.key = slot_keys[i];
+    return fields;
 }
 
 std::string configPath() {
@@ -104,22 +119,34 @@ static std::string fieldValue(const Field &f) {
     return "";
 }
 
-static void writeDefaults(const std::string &path) {
-    Config defaults;
-    FILE *f = fopen(path.c_str(), "w");
-    if (!f) return;
-    fprintf(f, "# earshot config\n");
-    for (const Field &field : fieldsOf(&defaults)) {
-        if (field.comment) fprintf(f, "\n# %s\n", field.comment);
-        fprintf(f, "%s = %s\n", field.key, fieldValue(field).c_str());
+// writes every key with its comment and leaves out unused ai slots past the third
+bool configSave(const Config &cfg, const std::string &path) {
+    Config copy = cfg;
+    std::string out = "# earshot config\n";
+    for (const Field &field : fieldsOf(&copy)) {
+        std::string value = fieldValue(field);
+        bool spare_slot = field.key[0] == 'a' && field.key[1] == 'i' && field.key[2] >= '4' && field.key[2] <= '9';
+        if (spare_slot && value.empty()) continue;
+        if (field.comment) out += std::string("\n# ") + field.comment + "\n";
+        out += std::string(field.key) + " = " + value + "\n";
     }
-    fclose(f);
+    std::string tmp = path + ".tmp";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) return false;
+    bool ok = fputs(out.c_str(), f) >= 0;
+    ok = fclose(f) == 0 && ok;
+    return ok && replaceFile(tmp, path);
 }
 
 // keys renamed since earlier versions still load
 static const char *renamed(const std::string &key) {
     if (key == "out_dir") return "clip_dir";
+    if (key == "llm_model") return "ai1";
     return key.c_str();
+}
+
+static bool isRenamed(const std::string &key) {
+    return key == "out_dir" || key == "llm_model";
 }
 
 bool configApply(Config *cfg, const std::string &key, const std::string &value) {
@@ -140,11 +167,12 @@ bool configLoad(Config *cfg, const std::string &path, std::string *err) {
     FILE *f = fopen(path.c_str(), "r");
     if (!f) {
         makeDirs(configDir());
-        writeDefaults(path);
+        configSave(*cfg, path);
         return true;
     }
     char line[4096];
     int number = 0;
+    bool old_format = false;
     while (fgets(line, sizeof line, f)) {
         number++;
         std::string s = trim(line);
@@ -152,9 +180,15 @@ bool configLoad(Config *cfg, const std::string &path, std::string *err) {
         size_t eq = s.find('=');
         std::string key = trim(s.substr(0, eq));
         std::string value = eq == std::string::npos ? "" : trim(s.substr(eq + 1));
+        old_format = old_format || isRenamed(key);
         if (!configApply(cfg, key, value)) *err += "line " + std::to_string(number) + ": unknown key " + key + "\n";
     }
     fclose(f);
+    // files written before ai slots had an empty instruction only because that was the old default
+    if (old_format) {
+        if (cfg->instruction.empty()) cfg->instruction = default_instruction;
+        configSave(*cfg, path);
+    }
     return err->empty();
 }
 
@@ -176,8 +210,12 @@ void configSet(const std::string &path, const char *key, const std::string &valu
         fclose(f);
     }
     if (!found) lines.push_back(std::string(key) + " = " + value + "\n");
-    FILE *f = fopen(path.c_str(), "w");
+    // a temp file and rename so a crash never leaves half a config
+    std::string tmp = path + ".tmp";
+    FILE *f = fopen(tmp.c_str(), "w");
     if (!f) return;
-    for (const std::string &s : lines) fputs(s.c_str(), f);
-    fclose(f);
+    bool ok = true;
+    for (const std::string &s : lines) ok = fputs(s.c_str(), f) >= 0 && ok;
+    ok = fclose(f) == 0 && ok;
+    if (!ok || !replaceFile(tmp, path)) remove(tmp.c_str());
 }

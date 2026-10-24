@@ -7,6 +7,7 @@
 #include <thread>
 
 struct Job {
+    AiModel model;
     std::string instruction, context, text;
 };
 
@@ -23,7 +24,36 @@ struct Llm {
     std::thread thread;
     Process *server = nullptr;
     bool tried_start = false;
+    std::vector<std::string> imported;  // gguf files already turned into ollama models
 };
+
+static std::string trimmed(const std::string &s) {
+    size_t a = s.find_first_not_of(" \t");
+    if (a == std::string::npos) return "";
+    return s.substr(a, s.find_last_not_of(" \t") - a + 1);
+}
+
+AiModel aiParse(const std::string &slot, const std::string &default_url) {
+    AiModel m;
+    std::string s = trimmed(slot);
+    size_t at = s.find(" @ ");
+    m.url = at == std::string::npos ? default_url : trimmed(s.substr(at + 3));
+    s = trimmed(s.substr(0, at));
+    bool path = s.find('/') != std::string::npos || s.find('\\') != std::string::npos;
+    if (path || (s.size() > 5 && s.compare(s.size() - 5, 5, ".gguf") == 0)) {
+        m.gguf = expandPath(s);
+        std::string base = m.gguf.substr(m.gguf.find_last_of("/\\") + 1);
+        if (base.size() > 5 && base.compare(base.size() - 5, 5, ".gguf") == 0) base.resize(base.size() - 5);
+        m.label = base;
+        // ollama names allow lower case letters digits dots dashes and underscores
+        m.name = "earshot-";
+        for (char c : base) m.name.push_back(isalnum((unsigned char)c) || c == '.' || c == '_' ? (char)tolower((unsigned char)c) : '-');
+        return m;
+    }
+    m.name = s;
+    m.label = s;
+    return m;
+}
 
 static void jsonEscape(std::string *out, const std::string &s) {
     out->push_back('"');
@@ -118,8 +148,9 @@ static std::vector<std::string> splitWords(const std::string &s) {
 }
 
 // returns the curl exit code and fills reply with the body
-static int post(Llm *llm, const std::string &body, std::string *reply) {
-    std::string base = tempDir() + "/earshot-llm";
+static int post(Llm *llm, const std::string &url, const std::string &body, std::string *reply) {
+    // the pid keeps two running copies from sharing temp files
+    std::string base = tempDir() + "/earshot-llm-" + std::to_string(processId());
     std::string headers = "Content-Type: application/json\n";
     if (!llm->api_key.empty()) headers += "Authorization: Bearer " + llm->api_key + "\n";
     // the key goes through a private file so it never shows in the process list
@@ -128,7 +159,7 @@ static int post(Llm *llm, const std::string &body, std::string *reply) {
         return -1;
     }
     int code = runProcess({ "curl", "-sS", "-m", "180", "-H", "@" + base + ".hdr",
-                            "--data-binary", "@" + base + ".json", llm->cfg.llm_url }, reply);
+                            "--data-binary", "@" + base + ".json", url }, reply);
     remove((base + ".json").c_str());
     remove((base + ".hdr").c_str());
     return code;
@@ -142,29 +173,64 @@ static bool saysNothing(const std::string &reply) {
     return plain == "nothing" || plain == "none" || plain == "na" || plain == "empty";
 }
 
-static void request(Llm *llm, const std::string &instruction, const std::string &context, const std::string &text) {
+// makes an ollama model from a gguf file once so a slot can point at any file on disk
+static bool importGguf(Llm *llm, const AiModel &m, std::string *err) {
+    for (const std::string &done : llm->imported)
+        if (done == m.gguf) return true;
+    FILE *f = fopen(m.gguf.c_str(), "rb");
+    if (!f) return *err = "cannot read " + m.gguf, false;
+    fclose(f);
+    std::string out;
+    if (runProcess({ "ollama", "show", m.name }, &out) != 0) {
+        llm->state = LlmState::Importing;
+        std::string modelfile = tempDir() + "/earshot-" + std::to_string(processId()) + ".Modelfile";
+        if (!writePrivateFile(modelfile, "FROM " + m.gguf + "\n")) return *err = "cannot write " + modelfile, false;
+        int code = runProcess({ "ollama", "create", m.name, "-f", modelfile }, &out);
+        remove(modelfile.c_str());
+        if (code == -1) return *err = "a .gguf slot needs ollama installed (ollama.com)", false;
+        if (code != 0) return *err = "ollama could not import " + m.gguf + ": " + trimmed(out).substr(0, 160), false;
+    }
+    llm->imported.push_back(m.gguf);
+    return true;
+}
+
+// turns the usual failures into something the user can act on
+static std::string explain(const AiModel &m, const std::string &message) {
+    std::string lower;
+    for (char c : message) lower.push_back((char)tolower((unsigned char)c));
+    if (lower.find("not found") != std::string::npos && lower.find("model") != std::string::npos)
+        return m.gguf.empty() ? "ai model " + m.name + " is not installed: run  ollama pull " + m.name : "ai model " + m.label + " is missing in ollama";
+    return "ai error: " + message.substr(0, 200);
+}
+
+static void request(Llm *llm, const Job &job) {
+    const AiModel &m = job.model;
+    // tested against gemma3 qwen2.5 and llama3.2: this keeps speaker names and changes the least
     std::string system =
-        "You clean up a live audio transcript that arrives in chunks.\n"
+        "You work on a live speech-to-text transcript that arrives in chunks. Speech recognition often mishears "
+        "words that sound alike, especially over music or noise.\n"
         "Rules:\n"
-        "- Use only what is actually said in the NEW chunk. Never invent, guess or add facts.\n"
-        "- Do not repeat anything already in the earlier output.\n"
-        "- If the NEW chunk adds nothing new, reply with an empty message.\n"
-        "- Output only the result, with no preamble, labels or quotes.\n\n"
-        "Instruction: " + instruction;
+        "- Work only on the NEW chunk. Earlier output is context to help you understand what was meant.\n"
+        "- Keep the speaker name before each colon exactly as given.\n"
+        "- Replace a word only when it is clearly a mishearing that makes no sense in context.\n"
+        "- Drop lines that are only filler noise like a lone I, Oh or Um.\n"
+        "- Never invent or add facts and never comment. If the NEW chunk adds nothing, reply with an empty message.\n"
+        "- Output only the result.\n\n"
+        "Instruction: " + job.instruction;
     std::string user;
-    if (!context.empty()) user += "Earlier output (context only):\n" + context + "\n\n";
-    user += "NEW chunk:\n" + text;
+    if (!job.context.empty()) user += "Earlier output (context only):\n" + job.context + "\n\n";
+    user += "NEW chunk:\n" + job.text;
 
     std::string body = "{\"model\":";
-    jsonEscape(&body, llm->cfg.llm_model);
+    jsonEscape(&body, m.name);
     body += ",\"stream\":false,\"temperature\":0,\"messages\":[{\"role\":\"system\",\"content\":";
     jsonEscape(&body, system);
     body += "},{\"role\":\"user\",\"content\":";
     jsonEscape(&body, user);
     body += "}]}";
 
-    std::string reply;
-    int code = post(llm, body, &reply);
+    std::string reply, err;
+    int code = post(llm, m.url, body, &reply);
     // curl exit 7 means nothing is listening so start the local server once
     if (code == 7 && !llm->tried_start && !llm->cfg.llm_start.empty()) {
         llm->tried_start = true;
@@ -172,17 +238,27 @@ static void request(Llm *llm, const std::string &instruction, const std::string 
         llm->server = spawnProcess(splitWords(llm->cfg.llm_start));
         for (int i = 0; i < 30 && code == 7 && llm->server; i++) {
             sleepMs(1000);
-            code = post(llm, body, &reply);
+            code = post(llm, m.url, body, &reply);
         }
         llm->state = LlmState::Working;
+    }
+    if (!m.gguf.empty() && code == 0 && reply.find("not found") != std::string::npos) {
+        if (importGguf(llm, m, &err)) {
+            llm->state = LlmState::Working;
+            code = post(llm, m.url, body, &reply);
+        }
     }
 
     bool ok = false;
     std::string out;
-    if (code == -1 && reply.empty()) {
+    if (!err.empty()) {
+        out = err;
+    } else if (code == -1 && reply.empty()) {
         out = "curl not found";
+    } else if (code == 7) {
+        out = "cannot reach " + m.url + (llm->cfg.llm_start.rfind("ollama", 0) == 0 ? " (is ollama installed? ollama.com)" : "");
     } else if (code != 0) {
-        out = "llm request failed: " + reply.substr(0, 200);
+        out = "ai request failed: " + reply.substr(0, 200);
     } else {
         size_t message = reply.find("\"message\"");
         if (message != std::string::npos && jsonString(reply, "content", message, &out)) {
@@ -191,9 +267,9 @@ static void request(Llm *llm, const std::string &instruction, const std::string 
             out = a == std::string::npos || saysNothing(out) ? "" : out.substr(a, b - a + 1);
             ok = true;
         } else if (jsonString(reply, "message", 0, &out) || jsonString(reply, "error", 0, &out)) {
-            out = "llm error: " + out;
+            out = explain(m, out);
         } else {
-            out = "llm unexpected reply: " + reply.substr(0, 200);
+            out = "ai unexpected reply: " + reply.substr(0, 200);
         }
     }
     std::lock_guard<std::mutex> lock(llm->mu);
@@ -209,7 +285,7 @@ static void worker(Llm *llm) {
         Job job = llm->jobs.front();
         llm->jobs.erase(llm->jobs.begin());
         lock.unlock();
-        request(llm, job.instruction, job.context, job.text);
+        request(llm, job);
         lock.lock();
     }
 }
@@ -233,12 +309,13 @@ void llmDestroy(Llm *llm) {
     delete llm;
 }
 
-bool llmSubmit(Llm *llm, const std::string &instruction, const std::string &context, const std::string &text) {
-    if (llm->state == LlmState::Working || llm->state == LlmState::Starting) return false;
+bool llmSubmit(Llm *llm, const AiModel &model, const std::string &instruction, const std::string &context, const std::string &text) {
+    LlmState state = llm->state;
+    if (state == LlmState::Working || state == LlmState::Starting || state == LlmState::Importing) return false;
     llm->state = LlmState::Working;
     {
         std::lock_guard<std::mutex> lock(llm->mu);
-        llm->jobs.push_back({ instruction, context, text });
+        llm->jobs.push_back({ model, instruction, context, text });
     }
     llm->wake.notify_one();
     return true;

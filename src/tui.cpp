@@ -252,11 +252,12 @@ static void drawTitle(const View &v, int w) {
     if (v.playback_left > 0)
         segs.push_back({ std::string(paint(play_badge)) + " ▶ " + minutes(v.playback_left) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
     segs.push_back({ "whisper " + v.model + (v.whisper_busy ? std::string(paint(yellow)) + " ●" + paint(white) : "  "), 4 });
-    std::string ai = "ai ";
+    std::string ai = "ai " + (v.ai.empty() ? "" : v.ai + " ");
     switch (v.llm) {
     case LlmState::Off: ai += std::string(paint(gray)) + "off"; break;
     case LlmState::Idle: ai += std::string(paint(green)) + "ready"; break;
     case LlmState::Starting: ai += std::string(paint(yellow)) + "starting server"; break;
+    case LlmState::Importing: ai += std::string(paint(yellow)) + "importing model"; break;
     case LlmState::Working: ai += std::string(paint(yellow)) + "thinking"; break;
     case LlmState::Error: ai += std::string(paint(red)) + "error"; break;
     }
@@ -351,14 +352,14 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     if (v.editing) wrapText(v.edit + "▏", rw - 1, &lines);
     else if (!v.instruction.empty()) wrapText(v.instruction, rw - 1, &lines);
     else {
-        wrapText("none so the transcript stays raw", rw - 1, &lines);
+        wrapText("none so the ai is off", rw - 1, &lines);
         ins_color = paint(gray);
     }
     if (lines.size() > 2) lines.erase(lines.begin(), lines.end() - 2);
     row = drawText(row, rx, rw, 2, lines, 0, ins_color);
 
     int avail = bottom - row;
-    int transcript_rows = v.instruction.empty() ? avail : avail / 2;
+    int transcript_rows = v.ai.empty() ? avail : avail / 2;
     int processed_rows = avail - transcript_rows;
 
     // paragraphs with the speaker and time once at the start and a hanging indent after
@@ -396,7 +397,7 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     row = drawText(row, rx, rw, transcript_rows - 1, raw, v.scroll, "");
     if (processed_rows > 0) {
         moveTo(row++, rx);
-        cell(std::string(paint(bold)) + paint(cyan) + " Processed" + paint(reset), rw);
+        cell(std::string(paint(bold)) + paint(cyan) + " AI" + paint(reset) + paint(gray) + (v.ai.empty() ? "  off" : "  " + v.ai) + paint(reset), rw);
         if (!processed.empty() && processed.back().empty()) processed.pop_back();
         drawText(row, rx, rw, processed_rows - 1, processed, 0, paint(green));
     }
