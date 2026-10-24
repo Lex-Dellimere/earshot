@@ -205,7 +205,7 @@ bool sameSource(const Source &a, const Source &b) {
     return a.id == b.id;
 }
 
-static std::string timestamp(double t) {
+std::string clockText(double t) {
     time_t tt = (time_t)t;
     char b[16];
     strftime(b, sizeof b, "%H:%M:%S", localtime(&tt));
@@ -425,7 +425,7 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
         for (size_t i = 0; i < paras.size(); i++) {
             const Paragraph &p = paras[i];
             std::string head;
-            if (v.timestamps) head += std::string(paint(gray)) + timestamp(p.start) + "  " + paint(reset);
+            if (v.timestamps) head += std::string(paint(gray)) + clockText(p.start) + "  " + paint(reset);
             if (v.labels) {
                 std::string name = v.label[p.channel];
                 while (textWidth(name) < name_w) name += " ";

@@ -31,7 +31,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(vad, "speech detection: silero energy or off to transcribe everything like music"),
     NUMBER(vad_threshold, nullptr),
     NUMBER(chunk, "longest audio chunk in seconds sent to whisper"),
-    FLAG(focus, "keep sound panned to the centre where voices usually sit"),
+    FLAG(focus, "keep sound panned to the centre; helps against wide crowds, hurts when music has a centred lead vocal"),
     NUMBER(highpass, "cut rumble and bass below this many hz or 0 to disable"),
     FLAG(normalize, "bring quiet speech up to a steady level before whisper"),
     INTEGER(beam, "beam search width where 1 is fastest"),

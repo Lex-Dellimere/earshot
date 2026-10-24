@@ -40,13 +40,6 @@ static std::string timeText(const char *format) {
     return b;
 }
 
-static std::string clockText(double t) {
-    time_t tt = (time_t)t;
-    char b[16];
-    strftime(b, sizeof b, "%H:%M:%S", localtime(&tt));
-    return b;
-}
-
 // a small model often restates a recent result so drop exact repeats
 static bool recentlySaid(const std::vector<std::string> &processed, const std::string &text) {
     auto plain = [](const std::string &s) {
@@ -672,6 +665,7 @@ void App::stop() {
     if (processed_file) fclose(processed_file);
     if (llm) llmDestroy(llm);
     if (audio) audioClose(audio);
+    platformShutdown();
 }
 
 int runApp(const Config &cfg, const std::string &config_path, bool print) {

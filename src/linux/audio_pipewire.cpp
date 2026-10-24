@@ -173,6 +173,11 @@ Audio *audioOpen(Ring *rings[channel_count]) {
     a->core = pw_context_connect(a->context, nullptr, 0);
     if (!a->core) {
         pw_thread_loop_unlock(a->loop);
+        pw_thread_loop_stop(a->loop);
+        pw_context_destroy(a->context);
+        pw_thread_loop_destroy(a->loop);
+        delete a;
+        pw_deinit();
         return nullptr;
     }
     a->registry = pw_core_get_registry(a->core, PW_VERSION_REGISTRY, 0);

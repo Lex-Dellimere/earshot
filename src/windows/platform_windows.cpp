@@ -163,7 +163,8 @@ static std::string commandLine(const std::vector<std::string> &args) {
     return line;
 }
 
-int runProcess(const std::vector<std::string> &args, std::string *out) {
+// runs a command to completion and kills it early if cancel becomes true
+int runProcess(const std::vector<std::string> &args, std::string *out, const std::atomic<bool> *cancel) {
     SECURITY_ATTRIBUTES sa = { sizeof sa, nullptr, TRUE };
     HANDLE read_end = nullptr, write_end = nullptr;
     if (out && !CreatePipe(&read_end, &write_end, &sa, 0)) return -1;
@@ -183,19 +184,41 @@ int runProcess(const std::vector<std::string> &args, std::string *out) {
         if (read_end) CloseHandle(read_end);
         return -1;
     }
+    bool killed = false;
+    auto check = [&] {
+        if (cancel && *cancel && !killed) {
+            TerminateProcess(pi.hProcess, 1);
+            killed = true;
+        }
+    };
     if (out) {
         out->clear();
         char buf[4096];
-        DWORD n;
-        while (ReadFile(read_end, buf, sizeof buf, &n, nullptr) && n > 0) out->append(buf, n);
+        for (;;) {
+            DWORD avail = 0, n = 0;
+            if (!PeekNamedPipe(read_end, nullptr, 0, nullptr, &avail, nullptr)) break;
+            if (avail == 0) {
+                check();
+                if (WaitForSingleObject(pi.hProcess, 50) == WAIT_OBJECT_0) {
+                    // drain whatever the child wrote just before exiting
+                    while (PeekNamedPipe(read_end, nullptr, 0, nullptr, &avail, nullptr) && avail > 0 &&
+                           ReadFile(read_end, buf, sizeof buf, &n, nullptr) && n > 0)
+                        out->append(buf, n);
+                    break;
+                }
+                continue;
+            }
+            if (!ReadFile(read_end, buf, sizeof buf, &n, nullptr) || n == 0) break;
+            out->append(buf, n);
+        }
         CloseHandle(read_end);
     }
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    while (WaitForSingleObject(pi.hProcess, 50) == WAIT_TIMEOUT) check();
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
-    return (int)code;
+    return killed ? -1 : (int)code;
 }
 
 struct Process {
@@ -364,3 +387,6 @@ void hotkeysStart(const std::vector<std::pair<std::string, std::string>> &binds,
     WaitForSingleObject(ready, 2000);
     CloseHandle(ready);
 }
+
+// the pipe and hotkey threads are detached and end with the process
+void platformShutdown() {}

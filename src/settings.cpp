@@ -17,7 +17,7 @@ static const std::vector<Setting> list = {
     { "vad", "Speech detection", "silero is best, energy is simpler, off transcribes everything like song lyrics.", Setting::Choice, 0, 0, 0, true, { "silero", "energy", "off" } },
     { "vad_threshold", "Detection threshold", "Lower catches quieter speech, higher ignores more noise.", Setting::Number, 0.05f, 0.05f, 0.95f },
     { "context", "Carry context", "Give whisper the previous line so sentences continue.", Setting::Toggle },
-    { "focus", "Focus on the centre", "Keep sound panned to the middle where voices usually sit.", Setting::Toggle },
+    { "focus", "Focus on the centre", "Keeps sound panned to the middle. Helps against wide crowd noise, hurts when music has a centred lead vocal.", Setting::Toggle },
     { "highpass", "Cut bass below (Hz)", "Removes rumble and bass. 0 turns it off.", Setting::Number, 25, 0, 400 },
     { "normalize", "Level quiet speech", "Brings quiet sources up to a steady level before whisper.", Setting::Toggle },
     { "chunk", "Longest chunk (s)", "Longest piece of speech sent to whisper at once.", Setting::Number, 1, 4, 30 },

@@ -34,7 +34,7 @@ struct Config {
     std::string vad = "silero";
     float vad_threshold = 0.35f;
     float chunk = 8;
-    bool focus = true;
+    bool focus = false;
     float highpass = 100;
     bool normalize = true;
     int beam = 1;
@@ -244,13 +244,14 @@ int terminalRead(char *buf, int len);
 void terminalSize(int *w, int *h);
 void terminalWrite(const std::string &s);
 
-int runProcess(const std::vector<std::string> &args, std::string *out);
+int runProcess(const std::vector<std::string> &args, std::string *out, const std::atomic<bool> *cancel = nullptr);
 struct Process;
 Process *spawnProcess(const std::vector<std::string> &args);
 void killProcess(Process *proc);
 void openPath(const std::string &path);
 
 void platformInit(std::atomic<bool> *quit);
+void platformShutdown();
 bool controlListen(std::string *err);
 bool controlSend(const std::string &cmd);
 void hotkeysStart(const std::vector<std::pair<std::string, std::string>> &binds, std::string *report);
@@ -326,6 +327,7 @@ struct View {
 };
 
 void tuiSetColor(bool on);
+std::string clockText(double t);
 int tuiReadKey(std::string *text);
 int keyCode(const std::string &name);
 void tuiDraw(const View &v);

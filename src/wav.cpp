@@ -48,6 +48,7 @@ bool clipBegin(Clip *clip, Ring *ring, const std::string &dir, double before, co
 
 void clipPump(Clip *clip, Ring *ring) {
     if (!clip->file) return;
+    // only the main loop writes clips so one buffer serves them all
     static int16_t chunk[capture_rate * capture_channels];
     for (;;) {
         size_t n = ringRead(ring, &clip->cursor, chunk, capture_rate);

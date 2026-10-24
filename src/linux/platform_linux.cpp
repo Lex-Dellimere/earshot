@@ -130,7 +130,8 @@ static std::vector<char *> toArgv(const std::vector<std::string> &args) {
     return v;
 }
 
-int runProcess(const std::vector<std::string> &args, std::string *out) {
+// runs a command to completion and kills it early if cancel becomes true
+int runProcess(const std::vector<std::string> &args, std::string *out, const std::atomic<bool> *cancel) {
     int fd[2] = { -1, -1 };
     if (out && pipe(fd) != 0) return -1;
     pid_t pid = fork();
@@ -146,17 +147,34 @@ int runProcess(const std::vector<std::string> &args, std::string *out) {
         execvp(v[0], v.data());
         _exit(127);
     }
+    bool killed = false;
+    auto check = [&] {
+        if (cancel && *cancel && !killed) {
+            kill(pid, SIGTERM);
+            killed = true;
+        }
+    };
     if (out) {
         close(fd[1]);
         out->clear();
         char buf[4096];
-        ssize_t n;
-        while ((n = read(fd[0], buf, sizeof buf)) > 0) out->append(buf, n);
+        for (;;) {
+            pollfd p = { fd[0], POLLIN, 0 };
+            int ready = poll(&p, 1, 100);
+            check();
+            if (ready <= 0) continue;
+            ssize_t n = read(fd[0], buf, sizeof buf);
+            if (n <= 0) break;
+            out->append(buf, n);
+        }
         close(fd[0]);
     }
     int status = 0;
-    waitpid(pid, &status, 0);
-    if (!WIFEXITED(status)) return -1;
+    while (waitpid(pid, &status, cancel ? WNOHANG : 0) == 0) {
+        check();
+        usleep(50 * 1000);
+    }
+    if (killed || !WIFEXITED(status)) return -1;
     return WEXITSTATUS(status) == 127 ? -1 : WEXITSTATUS(status);
 }
 
@@ -267,6 +285,7 @@ struct X11 {
     XErrorHandler (*set_error_handler)(XErrorHandler);
     int (*pending_events)(Display *);
     int (*next_event)(Display *, XEvent *);
+    int (*close_display)(Display *);
     Display *display;
 };
 
@@ -297,7 +316,8 @@ static bool loadX11() {
     x11.set_error_handler = (XErrorHandler(*)(XErrorHandler))dlsym(x11.lib, "XSetErrorHandler");
     x11.pending_events = (int (*)(Display *))dlsym(x11.lib, "XPending");
     x11.next_event = (int (*)(Display *, XEvent *))dlsym(x11.lib, "XNextEvent");
-    if (!x11.open_display || !x11.next_event) return false;
+    x11.close_display = (int (*)(Display *))dlsym(x11.lib, "XCloseDisplay");
+    if (!x11.open_display || !x11.next_event || !x11.close_display) return false;
     x11.display = x11.open_display(nullptr);
     return x11.display != nullptr;
 }
@@ -367,4 +387,18 @@ bool pollCommand(std::string *cmd) {
     *cmd = pending.front();
     pending.erase(pending.begin());
     return true;
+}
+
+// closes the control fifo and the x11 connection so nothing outlives a clean exit
+void platformShutdown() {
+    if (fifo_read >= 0) {
+        close(fifo_read);
+        close(fifo_keep);
+        unlink(fifoPath().c_str());
+        fifo_read = fifo_keep = -1;
+    }
+    if (x11.display) x11.close_display(x11.display);
+    if (x11.lib) dlclose(x11.lib);
+    x11 = {};
+    hotkeys.clear();
 }

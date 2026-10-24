@@ -20,7 +20,7 @@ struct Llm {
     std::condition_variable wake;
     std::vector<Job> jobs;
     std::vector<std::pair<bool, std::string>> results;
-    bool stop = false;
+    std::atomic<bool> stop{ false };  // also cancels a request in flight so quitting never waits on it
     std::thread thread;
     Process *server = nullptr;
     bool tried_start = false;
@@ -159,7 +159,7 @@ static int post(Llm *llm, const std::string &url, const std::string &body, std::
         return -1;
     }
     int code = runProcess({ "curl", "-sS", "-m", "180", "-H", "@" + base + ".hdr",
-                            "--data-binary", "@" + base + ".json", url }, reply);
+                            "--data-binary", "@" + base + ".json", url }, reply, &llm->stop);
     remove((base + ".json").c_str());
     remove((base + ".hdr").c_str());
     return code;
@@ -181,11 +181,11 @@ static bool importGguf(Llm *llm, const AiModel &m, std::string *err) {
     if (!f) return *err = "cannot read " + m.gguf, false;
     fclose(f);
     std::string out;
-    if (runProcess({ "ollama", "show", m.name }, &out) != 0) {
+    if (runProcess({ "ollama", "show", m.name }, &out, &llm->stop) != 0) {
         llm->state = LlmState::Importing;
         std::string modelfile = tempDir() + "/earshot-" + std::to_string(processId()) + ".Modelfile";
         if (!writePrivateFile(modelfile, "FROM " + m.gguf + "\n")) return *err = "cannot write " + modelfile, false;
-        int code = runProcess({ "ollama", "create", m.name, "-f", modelfile }, &out);
+        int code = runProcess({ "ollama", "create", m.name, "-f", modelfile }, &out, &llm->stop);
         remove(modelfile.c_str());
         if (code == -1) return *err = "a .gguf slot needs ollama installed (ollama.com)", false;
         if (code != 0) return *err = "ollama could not import " + m.gguf + ": " + trimmed(out).substr(0, 160), false;
@@ -236,8 +236,8 @@ static void request(Llm *llm, const Job &job) {
         llm->tried_start = true;
         llm->state = LlmState::Starting;
         llm->server = spawnProcess(splitWords(llm->cfg.llm_start));
-        for (int i = 0; i < 30 && code == 7 && llm->server; i++) {
-            sleepMs(1000);
+        for (int i = 0; i < 60 && code == 7 && llm->server && !llm->stop; i++) {
+            sleepMs(500);
             code = post(llm, m.url, body, &reply);
         }
         llm->state = LlmState::Working;
