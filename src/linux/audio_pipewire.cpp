@@ -6,29 +6,38 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/audio/format-utils.h>
 
+struct Audio;
+
+// one capture stream feeding one channel's ring
+struct Capture {
+    Audio *audio;
+    Ring *ring;
+    // guarded by the thread loop lock
+    pw_stream *stream = nullptr;
+    spa_hook listener;
+    Source current;
+    bool active = false;
+    bool target_gone = false;
+    std::string status = "off";
+    std::atomic<float> level{ 0 };
+};
+
 struct Audio {
     pw_thread_loop *loop;
     pw_context *context;
     pw_core *core;
     pw_registry *registry;
     spa_hook registry_listener;
-    Ring *ring;
 
     // guarded by the thread loop lock
     std::vector<Source> nodes;
-    pw_stream *capture = nullptr;
-    spa_hook capture_listener;
-    Source current;
-    bool active = false;
-    bool target_gone = false;
-    std::string status = "no source";
+    Capture captures[channel_count];
 
     pw_stream *player = nullptr;
     spa_hook player_listener;
     std::vector<int16_t> play_buf;
     size_t play_pos = 0;
 
-    std::atomic<float> level{ 0 };
     std::atomic<bool> playing{ false };
 };
 
@@ -37,34 +46,34 @@ static bool isMonitor(SourceKind kind) {
 }
 
 static void onCaptureProcess(void *data) {
-    Audio *a = (Audio *)data;
-    pw_buffer *b = pw_stream_dequeue_buffer(a->capture);
+    Capture *c = (Capture *)data;
+    pw_buffer *b = pw_stream_dequeue_buffer(c->stream);
     if (!b) return;
     spa_data *d = &b->buffer->datas[0];
     // a monitor would hear our own playback so skip it while playing
-    bool echo = a->playing && isMonitor(a->current.kind);
+    bool echo = c->audio->playing && isMonitor(c->current.kind);
     if (d->data && d->chunk && !echo) {
         uint32_t offset = SPA_MIN(d->chunk->offset, d->maxsize);
         uint32_t size = SPA_MIN(d->chunk->size, d->maxsize - offset);
         const int16_t *s = (const int16_t *)SPA_PTROFF(d->data, offset, void);
         size_t frames = size / (sizeof(int16_t) * capture_channels);
-        ringPush(a->ring, s, frames);
+        ringPush(c->ring, s, frames);
         int peak = 0;
         for (size_t i = 0; i < frames * capture_channels; i++) peak = std::max(peak, std::abs((int)s[i]));
         float p = peak / 32768.0f;
-        if (p > a->level) a->level = p;
+        if (p > c->level) c->level = p;
     }
-    pw_stream_queue_buffer(a->capture, b);
+    pw_stream_queue_buffer(c->stream, b);
 }
 
 static void onCaptureState(void *data, pw_stream_state, pw_stream_state state, const char *error) {
-    Audio *a = (Audio *)data;
+    Capture *c = (Capture *)data;
     switch (state) {
-    case PW_STREAM_STATE_ERROR: a->status = std::string("error ") + (error ? error : ""); break;
-    case PW_STREAM_STATE_STREAMING: a->status = "capturing"; break;
-    case PW_STREAM_STATE_PAUSED: a->status = a->target_gone ? "waiting for app" : "idle"; break;
-    case PW_STREAM_STATE_CONNECTING: a->status = "connecting"; break;
-    case PW_STREAM_STATE_UNCONNECTED: a->status = a->target_gone ? "waiting for app" : "unconnected"; break;
+    case PW_STREAM_STATE_ERROR: c->status = std::string("error ") + (error ? error : ""); break;
+    case PW_STREAM_STATE_STREAMING: c->status = "capturing"; break;
+    case PW_STREAM_STATE_PAUSED: c->status = c->target_gone ? "waiting for app" : "idle"; break;
+    case PW_STREAM_STATE_CONNECTING: c->status = "connecting"; break;
+    case PW_STREAM_STATE_UNCONNECTED: c->status = c->target_gone ? "waiting for app" : "unconnected"; break;
     }
 }
 
@@ -133,9 +142,11 @@ static void onGlobalRemove(void *data, uint32_t id) {
     Audio *a = (Audio *)data;
     for (size_t i = 0; i < a->nodes.size(); i++) {
         if ((uint32_t)a->nodes[i].id != id) continue;
-        if (a->active && a->current.kind == SourceKind::App && a->current.id == a->nodes[i].id) {
-            a->target_gone = true;
-            a->status = "waiting for app";
+        for (Capture &c : a->captures) {
+            if (c.active && c.current.kind == SourceKind::App && c.current.id == a->nodes[i].id) {
+                c.target_gone = true;
+                c.status = "waiting for app";
+            }
         }
         a->nodes.erase(a->nodes.begin() + i);
         return;
@@ -148,10 +159,13 @@ static const pw_registry_events registry_events = {
     .global_remove = onGlobalRemove,
 };
 
-Audio *audioOpen(Ring *ring) {
+Audio *audioOpen(Ring *rings[channel_count]) {
     pw_init(nullptr, nullptr);
     Audio *a = new Audio();
-    a->ring = ring;
+    for (int ch = 0; ch < channel_count; ch++) {
+        a->captures[ch].audio = a;
+        a->captures[ch].ring = rings[ch];
+    }
     a->loop = pw_thread_loop_new("earshot", nullptr);
     a->context = pw_context_new(pw_thread_loop_get_loop(a->loop), nullptr, 0);
     pw_thread_loop_lock(a->loop);
@@ -170,7 +184,8 @@ Audio *audioOpen(Ring *ring) {
 
 void audioClose(Audio *a) {
     pw_thread_loop_lock(a->loop);
-    if (a->capture) pw_stream_destroy(a->capture);
+    for (Capture &c : a->captures)
+        if (c.stream) pw_stream_destroy(c.stream);
     if (a->player) pw_stream_destroy(a->player);
     pw_proxy_destroy((pw_proxy *)a->registry);
     pw_core_disconnect(a->core);
@@ -209,14 +224,14 @@ static const spa_pod *audioFormat(spa_pod_builder *b) {
     return spa_format_audio_raw_build(b, SPA_PARAM_EnumFormat, &info);
 }
 
-static void connectCapture(Audio *a, const Source &s) {
-    if (a->capture) pw_stream_destroy(a->capture);
-    a->current = s;
-    a->active = true;
-    a->target_gone = false;
+static void connectCapture(Audio *a, Capture *c, const Source &s) {
+    if (c->stream) pw_stream_destroy(c->stream);
+    c->current = s;
+    c->active = true;
+    c->target_gone = false;
 
     pw_properties *props = pw_properties_new(
-        PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, "Music",
+        PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_CATEGORY, "Capture", PW_KEY_MEDIA_ROLE, isMonitor(s.kind) || s.kind == SourceKind::App ? "Music" : "Communication",
         PW_KEY_NODE_NAME, "earshot", PW_KEY_APP_NAME, "earshot", nullptr);
     if (isMonitor(s.kind)) pw_properties_set(props, PW_KEY_STREAM_CAPTURE_SINK, "true");
     if (s.kind == SourceKind::App || s.kind == SourceKind::Output || s.kind == SourceKind::Input)
@@ -224,29 +239,41 @@ static void connectCapture(Audio *a, const Source &s) {
     // never fall back to the mic when the app stream goes away
     if (s.kind == SourceKind::App) pw_properties_set(props, PW_KEY_NODE_DONT_RECONNECT, "true");
 
-    a->capture = pw_stream_new(a->core, "earshot capture", props);
-    pw_stream_add_listener(a->capture, &a->capture_listener, &capture_events, a);
+    c->stream = pw_stream_new(a->core, "earshot capture", props);
+    pw_stream_add_listener(c->stream, &c->listener, &capture_events, c);
     uint8_t buf[1024];
     spa_pod_builder b = SPA_POD_BUILDER_INIT(buf, sizeof buf);
     const spa_pod *params[1] = { audioFormat(&b) };
-    pw_stream_connect(a->capture, PW_DIRECTION_INPUT, PW_ID_ANY,
+    pw_stream_connect(c->stream, PW_DIRECTION_INPUT, PW_ID_ANY,
                       (pw_stream_flags)(PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS), params, 1);
-    a->status = "connecting";
+    c->status = "connecting";
 }
 
-void audioStart(Audio *a, const Source &s) {
+void audioStart(Audio *a, int ch, const Source &s) {
     pw_thread_loop_lock(a->loop);
-    connectCapture(a, s);
+    connectCapture(a, &a->captures[ch], s);
+    pw_thread_loop_unlock(a->loop);
+}
+
+void audioStop(Audio *a, int ch) {
+    pw_thread_loop_lock(a->loop);
+    Capture &c = a->captures[ch];
+    if (c.stream) pw_stream_destroy(c.stream);
+    c.stream = nullptr;
+    c.active = false;
+    c.status = "off";
+    c.level = 0;
     pw_thread_loop_unlock(a->loop);
 }
 
 void audioTick(Audio *a) {
     pw_thread_loop_lock(a->loop);
-    if (a->active && a->target_gone) {
+    for (Capture &c : a->captures) {
+        if (!c.active || !c.target_gone) continue;
         for (const Source &s : a->nodes) {
-            if (s.kind == SourceKind::App && s.name == a->current.name) {
+            if (s.kind == SourceKind::App && s.name == c.current.name) {
                 Source copy = s;
-                connectCapture(a, copy);
+                connectCapture(a, &c, copy);
                 break;
             }
         }
@@ -258,23 +285,23 @@ void audioTick(Audio *a) {
     pw_thread_loop_unlock(a->loop);
 }
 
-bool audioCurrent(Audio *a, Source *out) {
+bool audioCurrent(Audio *a, int ch, Source *out) {
     pw_thread_loop_lock(a->loop);
-    bool active = a->active;
-    if (active) *out = a->current;
+    bool active = a->captures[ch].active;
+    if (active) *out = a->captures[ch].current;
     pw_thread_loop_unlock(a->loop);
     return active;
 }
 
-std::string audioStatus(Audio *a) {
+std::string audioStatus(Audio *a, int ch) {
     pw_thread_loop_lock(a->loop);
-    std::string s = a->status;
+    std::string s = a->captures[ch].status;
     pw_thread_loop_unlock(a->loop);
     return s;
 }
 
-float audioLevel(Audio *a) {
-    return a->level.exchange(0.0f);
+float audioLevel(Audio *a, int ch) {
+    return a->captures[ch].level.exchange(0.0f);
 }
 
 void playbackStart(Audio *a, std::vector<int16_t> frames) {

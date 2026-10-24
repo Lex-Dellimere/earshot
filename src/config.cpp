@@ -18,7 +18,10 @@ struct Field {
 
 static std::vector<Field> fieldsOf(Config *cfg) {
     return {
-    TEXT(source, "source to start on: system mic or part of an app or device name"),
+    TEXT(source, "what you hear: system or part of an app or device name"),
+    TEXT(mic, "your voice: mic for the default input, part of a device name, or empty for off"),
+    TEXT(them_label, "names shown before each channel's lines when both are on"),
+    TEXT(you_label, nullptr),
     TEXT(model, "whisper model name in the data dir or a full path to a ggml file"),
     TEXT(language, "spoken language code or auto for multilingual models"),
     INTEGER(threads, nullptr),

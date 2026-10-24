@@ -11,16 +11,28 @@ constexpr int min_chunk = whisper_rate * 3 / 2;
 
 enum class VadMode { Silero, Energy, Off };
 
-struct Transcriber {
+struct Transcriber;
+
+// one channel's capture to text loop
+struct Worker {
+    Transcriber *t;
+    int channel;
     Ring *ring;
+    whisper_vad_context *vad = nullptr;
+    std::thread thread;
+    std::atomic<bool> reset{ false };
+    std::string last_text;
+};
+
+struct Transcriber {
     Transcript *tr;
     Config cfg;
     VadMode mode;
     whisper_context *ctx = nullptr;
-    whisper_vad_context *vad = nullptr;
-    std::thread thread;
-    std::atomic<bool> stop{ false }, reset{ false }, busy{ false }, drain{ false };
-    std::string last_text;
+    std::mutex infer;  // one chunk at a time shares the model and the gpu
+    Worker workers[channel_count];
+    std::atomic<bool> stop{ false }, drain{ false };
+    std::atomic<int> busy{ 0 };
 };
 
 static void quietLog(enum ggml_log_level, const char *, void *) {}
@@ -46,7 +58,8 @@ static bool isNoise(const std::string &text) {
     return false;
 }
 
-static void runWhisper(Transcriber *t, std::vector<float> pcm, double start) {
+static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
+    Transcriber *t = w->t;
     if (t->cfg.normalize) normalizeChunk(&pcm);
     bool beam = t->cfg.beam > 1;
     whisper_full_params p = whisper_full_default_params(beam ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
@@ -57,30 +70,35 @@ static void runWhisper(Transcriber *t, std::vector<float> pcm, double start) {
     p.no_timestamps = true;
     p.suppress_nst = true;
     p.print_progress = p.print_realtime = p.print_special = p.print_timestamps = false;
-    if (t->cfg.context && !t->last_text.empty()) p.initial_prompt = t->last_text.c_str();
+    if (t->cfg.context && !w->last_text.empty()) p.initial_prompt = w->last_text.c_str();
 
-    t->busy = true;
-    if (whisper_full(t->ctx, p, pcm.data(), (int)pcm.size()) == 0) {
-        std::string text;
-        for (int i = 0; i < whisper_full_n_segments(t->ctx); i++) {
-            if (whisper_full_get_segment_no_speech_prob(t->ctx, i) > 0.6f) continue;
-            std::string seg = whisper_full_get_segment_text(t->ctx, i);
-            if (!isNoise(seg)) text += seg;
-        }
-        size_t a = text.find_first_not_of(' ');
-        if (a != std::string::npos) {
-            text = text.substr(a);
-            t->last_text = text;
-            std::lock_guard<std::mutex> lock(t->tr->mu);
-            t->tr->raw.push_back({ start, text });
+    t->busy++;
+    std::string text;
+    {
+        std::lock_guard<std::mutex> lock(t->infer);
+        if (whisper_full(t->ctx, p, pcm.data(), (int)pcm.size()) == 0) {
+            for (int i = 0; i < whisper_full_n_segments(t->ctx); i++) {
+                if (whisper_full_get_segment_no_speech_prob(t->ctx, i) > 0.6f) continue;
+                std::string seg = whisper_full_get_segment_text(t->ctx, i);
+                if (!isNoise(seg)) text += seg;
+            }
         }
     }
-    t->busy = false;
+    t->busy--;
+    size_t a = text.find_first_not_of(' ');
+    if (a == std::string::npos) return;
+    text = text.substr(a);
+    w->last_text = text;
+    transcriptAdd(t->tr, { start, text, w->channel });
 }
 
-static void worker(Transcriber *t) {
-    static int16_t frames[capture_rate / 10 * capture_channels];
-    Frontend *fe = frontendCreate(t->cfg);
+static void worker(Worker *w) {
+    Transcriber *t = w->t;
+    std::vector<int16_t> frames(capture_rate / 10 * capture_channels);
+    // a mic is mono in practice so centre extraction would only cost time
+    Config fcfg = t->cfg;
+    if (w->channel == You) fcfg.focus = false;
+    Frontend *fe = frontendCreate(fcfg);
     // start from the oldest audio so speech captured while the model loaded is kept
     uint64_t cursor = 0;
     std::vector<float> fresh, pcm;
@@ -93,18 +111,18 @@ static void worker(Transcriber *t) {
     const size_t max_samples = (size_t)(t->cfg.chunk * whisper_rate);
 
     while (!t->stop) {
-        if (t->reset.exchange(false)) {
+        if (w->reset.exchange(false)) {
             frontendDestroy(fe);
-            fe = frontendCreate(t->cfg);
-            cursor = ringTotal(t->ring);
+            fe = frontendCreate(fcfg);
+            cursor = ringTotal(w->ring);
             fresh.clear();
             fresh_used = 0;
             pcm.clear();
             speaking = false;
-            if (t->vad) whisper_vad_reset_state(t->vad);
+            if (w->vad) whisper_vad_reset_state(w->vad);
         }
-        uint64_t total = ringTotal(t->ring), from = cursor;
-        size_t n = ringRead(t->ring, &from, frames, capture_rate / 10);
+        uint64_t total = ringTotal(w->ring), from = cursor;
+        size_t n = ringRead(w->ring, &from, frames.data(), capture_rate / 10);
         if (n == 0) {
             if (t->drain) break;
             sleepMs(30);
@@ -116,24 +134,24 @@ static void worker(Transcriber *t) {
             fresh_time = nowSeconds() - (double)(total - from) / capture_rate;
         }
         cursor = from + n;
-        frontendProcess(fe, frames, n, &fresh);
+        frontendProcess(fe, frames.data(), n, &fresh);
 
         size_t windows = (fresh.size() - fresh_used) / vad_window;
         if (windows == 0) continue;
         const float *probs = nullptr;
         if (t->mode == VadMode::Silero &&
-            whisper_vad_detect_speech_no_reset(t->vad, fresh.data() + fresh_used, (int)(windows * vad_window)) &&
-            whisper_vad_n_probs(t->vad) >= (int)windows)
-            probs = whisper_vad_probs(t->vad);
+            whisper_vad_detect_speech_no_reset(w->vad, fresh.data() + fresh_used, (int)(windows * vad_window)) &&
+            whisper_vad_n_probs(w->vad) >= (int)windows)
+            probs = whisper_vad_probs(w->vad);
 
-        for (size_t w = 0; w < windows; w++) {
-            const float *win = fresh.data() + fresh_used + w * vad_window;
-            if (pcm.empty()) start = fresh_time + (double)(fresh_used + w * vad_window) / whisper_rate;
+        for (size_t k = 0; k < windows; k++) {
+            const float *win = fresh.data() + fresh_used + k * vad_window;
+            if (pcm.empty()) start = fresh_time + (double)(fresh_used + k * vad_window) / whisper_rate;
             pcm.insert(pcm.end(), win, win + vad_window);
 
             if (t->mode == VadMode::Off) {
                 if (pcm.size() >= max_samples) {
-                    runWhisper(t, pcm, start);
+                    runWhisper(w, pcm, start);
                     pcm.clear();
                 }
                 continue;
@@ -141,7 +159,7 @@ static void worker(Transcriber *t) {
 
             bool voiced;
             if (probs) {
-                voiced = probs[w] > t->cfg.vad_threshold;
+                voiced = probs[k] > t->cfg.vad_threshold;
             } else {
                 float e = 0;
                 for (int i = 0; i < vad_window; i++) e += win[i] * win[i];
@@ -163,11 +181,11 @@ static void worker(Transcriber *t) {
             silence_ms = voiced ? 0 : silence_ms + vad_window * 1000 / whisper_rate;
             bool ended = silence_ms >= hang_ms && pcm.size() >= (size_t)min_chunk;
             if (ended || pcm.size() >= max_samples) {
-                runWhisper(t, pcm, start);
+                runWhisper(w, pcm, start);
                 pcm.clear();
                 speaking = !ended;
                 silence_ms = 0;
-                if (ended && t->vad) whisper_vad_reset_state(t->vad);
+                if (ended && w->vad) whisper_vad_reset_state(w->vad);
             }
         }
         fresh_used += windows * vad_window;
@@ -178,11 +196,11 @@ static void worker(Transcriber *t) {
         }
     }
     // finish the utterance in progress so quitting does not drop it
-    if ((speaking || t->mode == VadMode::Off) && pcm.size() >= (size_t)whisper_rate / 2) runWhisper(t, pcm, start);
+    if ((speaking || t->mode == VadMode::Off) && pcm.size() >= (size_t)whisper_rate / 2) runWhisper(w, pcm, start);
     frontendDestroy(fe);
 }
 
-Transcriber *transcriberStart(Ring *ring, Transcript *tr, const Config &cfg, std::string *err, std::string *note) {
+Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note) {
     whisper_log_set(quietLog, nullptr);
     whisper_context_params cp = whisper_context_default_params();
     cp.use_gpu = cfg.gpu;
@@ -194,37 +212,43 @@ Transcriber *transcriberStart(Ring *ring, Transcript *tr, const Config &cfg, std
         return nullptr;
     }
     Transcriber *t = new Transcriber();
-    t->ring = ring;
     t->tr = tr;
     t->cfg = cfg;
     t->ctx = ctx;
     t->mode = cfg.vad == "off" ? VadMode::Off : cfg.vad == "energy" ? VadMode::Energy : VadMode::Silero;
-    if (t->mode == VadMode::Silero) {
+    for (int ch = 0; ch < channel_count; ch++) {
+        Worker *w = &t->workers[ch];
+        w->t = t;
+        w->channel = ch;
+        w->ring = rings[ch];
+        if (t->mode != VadMode::Silero) continue;
+        // silero keeps state between windows so each channel needs its own
         whisper_vad_context_params vp = whisper_vad_default_context_params();
         vp.n_threads = 1;
         vp.use_gpu = false;
-        std::string vad_path = modelPath("silero-v5.1.2");
-        t->vad = whisper_vad_init_from_file_with_params(vad_path.c_str(), vp);
-        if (!t->vad) {
+        w->vad = whisper_vad_init_from_file_with_params(modelPath("silero-v5.1.2").c_str(), vp);
+        if (!w->vad) {
             t->mode = VadMode::Energy;
             *note = "silero vad model missing so using energy vad (earshot --download silero)";
         }
     }
-    t->thread = std::thread(worker, t);
+    for (Worker &w : t->workers) w.thread = std::thread(worker, &w);
     return t;
 }
 
-void transcriberReset(Transcriber *t) {
-    t->reset = true;
+void transcriberReset(Transcriber *t, int channel) {
+    t->workers[channel].reset = true;
 }
 
 bool transcriberBusy(Transcriber *t) {
-    return t->busy;
+    return t->busy > 0;
 }
 
 static void finish(Transcriber *t) {
-    t->thread.join();
-    if (t->vad) whisper_vad_free(t->vad);
+    for (Worker &w : t->workers) {
+        w.thread.join();
+        if (w.vad) whisper_vad_free(w.vad);
+    }
     whisper_free(t->ctx);
     delete t;
 }
@@ -234,7 +258,7 @@ void transcriberStop(Transcriber *t) {
     finish(t);
 }
 
-// transcribes everything left in the ring before stopping
+// transcribes everything left in the rings before stopping
 void transcriberDrain(Transcriber *t) {
     t->drain = true;
     finish(t);

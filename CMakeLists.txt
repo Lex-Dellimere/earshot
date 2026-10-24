@@ -70,11 +70,13 @@ endif()
 
 # everything but main so the unit tests link the same code
 add_library(earshot_core OBJECT
+    src/app.cpp
     src/config.cpp
     src/ring.cpp
     src/wav.cpp
     src/dsp.cpp
     src/transcribe.cpp
+    src/transcript.cpp
     src/llm.cpp
     src/tui.cpp)
 target_compile_options(earshot_core PUBLIC -Wall -Wextra -Wno-missing-field-initializers -fno-exceptions -fno-rtti)

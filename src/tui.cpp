@@ -235,10 +235,18 @@ static void drawTitle(const View &v, int w) {
     };
     std::vector<Segment> segs;
     segs.push_back({ std::string(paint(bold)) + " earshot " + paint(normal), 5 });
-    bool capturing = v.status == "capturing";
-    std::string label = v.active ? v.active->label : "no source";
-    segs.push_back({ label + " " + paint(capturing ? green : yellow) + v.status + paint(white), 2 });
-    segs.push_back({ meter(v.level), 0 });
+    for (int ch = 0; ch < channel_count; ch++) {
+        const char *tint = paint(ch == You ? cyan : magenta);
+        if (!v.active[ch]) {
+            segs.push_back({ std::string(tint) + v.label[ch] + paint(gray) + " off" + paint(white), 6 });
+            continue;
+        }
+        // the channel name and meter stay while the source name and state go first on narrow screens
+        bool capturing = v.status[ch] == "capturing";
+        std::string state = capturing ? "" : std::string(" ") + paint(yellow) + v.status[ch];
+        segs.push_back({ std::string(tint) + paint(bold) + v.label[ch] + paint(normal) + " " + meter(v.level[ch]), 0 });
+        segs.push_back({ v.active[ch]->label + state + paint(white), 3 });
+    }
     if (v.clip_seconds > 0)
         segs.push_back({ std::string(paint(clip_badge)) + " ● CLIP " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
     if (v.playback_left > 0)
@@ -276,7 +284,8 @@ static void drawTitle(const View &v, int w) {
 static void drawSources(const View &v, int col, int top, int width, int rows) {
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    cell(" Sources" + std::string(paint(normal)) + paint(gray) + (v.overlay == Overlay::Sources ? "  ↑↓ Enter listen  Esc close" : ""), width);
+    std::string legend = std::string(paint(normal)) + "  " + paint(magenta) + "●" + paint(gray) + v.label[Them] + " " + paint(cyan) + "●" + paint(gray) + v.label[You];
+    cell(" Sources" + legend + (v.overlay == Overlay::Sources ? "  ↑↓ Enter on/off  Esc close" : ""), width);
     screen += paint(reset);
     const std::vector<Source> &list = *v.sources;
     int room = rows - 1;
@@ -284,9 +293,11 @@ static void drawSources(const View &v, int col, int top, int width, int rows) {
     int row = top + 1;
     for (int i = first; i < (int)list.size() && row < top + rows; i++, row++) {
         const Source &s = list[i];
-        bool on = v.active && sameSource(*v.active, s);
+        bool them = v.active[Them] && sameSource(*v.active[Them], s), you = v.active[You] && sameSource(*v.active[You], s);
+        bool on = them || you;
         std::string mark;
-        if (on) mark = std::string(paint(green)) + "●";
+        if (them) mark = std::string(paint(magenta)) + "●";
+        else if (you) mark = std::string(paint(cyan)) + "●";
         else if (s.kind == SourceKind::App) mark = std::string(paint(magenta)) + "♪";
         else if (s.kind == SourceKind::System || s.kind == SourceKind::Mic) mark = std::string(paint(blue)) + "◆";
         else mark = std::string(paint(gray)) + "·";
@@ -353,13 +364,20 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     std::vector<std::string> raw, processed;
     {
         std::lock_guard<std::mutex> lock(v.tr->mu);
+        bool both = v.active[Them] && v.active[You];
+        int name_w = both ? std::max(textWidth(v.label[Them]), textWidth(v.label[You])) + 2 : 0;
         for (size_t i = 0; i < v.tr->raw.size(); i++) {
             const Line &l = v.tr->raw[i];
+            if (l.dropped) continue;
             bool newest = i + 1 == v.tr->raw.size();
+            std::string name = both ? v.label[l.channel] : "";
+            while (textWidth(name) < name_w) name += " ";
+            std::string blank(name_w, ' ');
             std::vector<std::string> parts;
-            wrapText(l.text, rw - 12, &parts);
+            wrapText(l.text, rw - 12 - name_w, &parts);
             for (size_t k = 0; k < parts.size(); k++)
-                raw.push_back(std::string(paint(gray)) + (k == 0 ? timestamp(l.time) : "        ") + paint(reset) + "  " + (newest ? paint(white) : "") + parts[k]);
+                raw.push_back(std::string(paint(gray)) + (k == 0 ? timestamp(l.time) : "        ") + paint(reset) + "  " +
+                              paint(l.channel == You ? cyan : magenta) + (k == 0 ? name : blank) + paint(reset) + (newest ? paint(white) : "") + parts[k]);
         }
         for (const std::string &p : v.tr->processed) {
             wrapText(p, rw - 2, &processed);

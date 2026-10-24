@@ -11,10 +11,17 @@ constexpr int capture_rate = 48000;
 constexpr int capture_channels = 2;
 constexpr int whisper_rate = 16000;
 
+// them is what you hear from an app or the system and you is your mic
+enum Channel { Them = 0, You = 1 };
+constexpr int channel_count = 2;
+
 // config
 
 struct Config {
     std::string source = "system";
+    std::string mic = "mic";
+    std::string them_label = "Them";
+    std::string you_label = "You";
     std::string model = "base.en";
     std::string language = "en";
     int threads = 8;
@@ -104,6 +111,8 @@ void normalizeChunk(std::vector<float> *pcm);
 struct Line {
     double time;
     std::string text;
+    int channel = Them;
+    bool dropped = false;  // an echo of the other channel
 };
 
 struct Transcript {
@@ -112,9 +121,11 @@ struct Transcript {
     std::vector<std::string> processed;
 };
 
+void transcriptAdd(Transcript *tr, Line line);
+
 struct Transcriber;
-Transcriber *transcriberStart(Ring *ring, Transcript *tr, const Config &cfg, std::string *err, std::string *note);
-void transcriberReset(Transcriber *t);
+Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note);
+void transcriberReset(Transcriber *t, int channel);
 bool transcriberBusy(Transcriber *t);
 void transcriberStop(Transcriber *t);
 void transcriberDrain(Transcriber *t);
@@ -142,14 +153,15 @@ struct Source {
 };
 
 struct Audio;
-Audio *audioOpen(Ring *ring);
+Audio *audioOpen(Ring *rings[channel_count]);
 void audioClose(Audio *audio);
 std::vector<Source> audioSources(Audio *audio);
-void audioStart(Audio *audio, const Source &src);
+void audioStart(Audio *audio, int channel, const Source &src);
+void audioStop(Audio *audio, int channel);
 void audioTick(Audio *audio);
-bool audioCurrent(Audio *audio, Source *out);
-std::string audioStatus(Audio *audio);
-float audioLevel(Audio *audio);
+bool audioCurrent(Audio *audio, int channel, Source *out);
+std::string audioStatus(Audio *audio, int channel);
+float audioLevel(Audio *audio, int channel);
 void playbackStart(Audio *audio, std::vector<int16_t> frames);
 void playbackStop(Audio *audio);
 double playbackRemaining(Audio *audio);
@@ -182,6 +194,11 @@ bool controlSend(const std::string &cmd);
 void hotkeysStart(const std::vector<std::pair<std::string, std::string>> &binds, std::string *report);
 bool pollCommand(std::string *cmd);
 
+// app
+
+int runApp(const Config &cfg, const std::string &config_path, bool print);
+int listSources();
+
 // tui
 
 enum Key {
@@ -194,9 +211,10 @@ enum class Overlay { None, Sources, Help };
 struct View {
     const std::vector<Source> *sources;
     int selected;
-    const Source *active;
-    std::string status;
-    float level;
+    const Source *active[channel_count];
+    std::string label[channel_count];
+    std::string status[channel_count];
+    float level[channel_count];
     double clip_seconds;
     double playback_left;
     bool whisper_busy;

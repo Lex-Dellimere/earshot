@@ -55,30 +55,33 @@ static WAVEFORMATEX captureFormat() {
     return f;
 }
 
-struct Audio {
+// one capture thread feeding one channel's ring
+struct Capture {
     Ring *ring;
+    Source current;  // guarded by the audio mutex with active and status
+    bool active = false;
+    std::string status = "off";
+    std::thread thread;
+    std::atomic<bool> stop{ false };
+    std::atomic<float> level{ 0 };
+};
+
+struct Audio {
     std::mutex mu;
     std::vector<Source> sources;
     double listed_at = 0;
-    Source current;
-    bool active = false;
-    std::string status = "no source";
     double checked_at = 0;
-
-    std::thread capture;
-    std::atomic<bool> capture_stop{ false };
+    Capture captures[channel_count];
 
     std::thread player;
     std::atomic<bool> play_stop{ false }, playing{ false };
     std::vector<int16_t> play_buf;
     std::atomic<size_t> play_pos{ 0 };
-
-    std::atomic<float> level{ 0 };
 };
 
-static void setStatus(Audio *a, const std::string &s) {
+static void setStatus(Audio *a, Capture *c, const std::string &s) {
     std::lock_guard<std::mutex> lock(a->mu);
-    a->status = s;
+    c->status = s;
 }
 
 static bool isMonitor(SourceKind kind) {
@@ -260,7 +263,7 @@ static IAudioClient *endpointClient(const Source &s) {
     return client;
 }
 
-static void captureLoop(Audio *a, Source src) {
+static void captureLoop(Audio *a, Capture *c, Source src) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     IAudioClient *client = src.kind == SourceKind::App ? processLoopbackClient((DWORD)src.id) : endpointClient(src);
     IAudioCaptureClient *cap = nullptr;
@@ -276,13 +279,13 @@ static void captureLoop(Audio *a, Source src) {
     if (FAILED(hr)) {
         char msg[64];
         snprintf(msg, sizeof msg, "error 0x%08lx", (unsigned long)hr);
-        setStatus(a, src.kind == SourceKind::App && !client ? "app capture needs windows 10 build 20348" : msg);
+        setStatus(a, c, src.kind == SourceKind::App && !client ? "app capture needs windows 10 build 20348" : msg);
     } else {
-        setStatus(a, "capturing");
+        setStatus(a, c, "capturing");
     }
 
     std::vector<int16_t> silence;
-    while (SUCCEEDED(hr) && !a->capture_stop) {
+    while (SUCCEEDED(hr) && !c->stop) {
         // the timeout also covers drivers that never signal loopback events
         WaitForSingleObject(ready, 20);
         UINT32 packet = 0;
@@ -298,14 +301,14 @@ static void captureLoop(Audio *a, Source src) {
             }
             // a loopback would hear our own playback so skip it while playing
             if (!(a->playing && isMonitor(src.kind))) {
-                ringPush(a->ring, samples, frames);
+                ringPush(c->ring, samples, frames);
                 int peak = 0;
                 for (UINT32 i = 0; i < frames * capture_channels; i++) peak = std::max(peak, std::abs((int)samples[i]));
-                if (peak / 32768.0f > a->level) a->level = peak / 32768.0f;
+                if (peak / 32768.0f > c->level) c->level = peak / 32768.0f;
             }
             cap->ReleaseBuffer(frames);
         }
-        if (FAILED(hr)) setStatus(a, "device lost");
+        if (FAILED(hr)) setStatus(a, c, "device lost");
     }
     if (client) client->Stop();
     release(cap);
@@ -314,22 +317,22 @@ static void captureLoop(Audio *a, Source src) {
     CoUninitialize();
 }
 
-static void stopCapture(Audio *a) {
-    a->capture_stop = true;
-    if (a->capture.joinable()) a->capture.join();
-    a->capture_stop = false;
+static void stopCapture(Capture *c) {
+    c->stop = true;
+    if (c->thread.joinable()) c->thread.join();
+    c->stop = false;
 }
 
-Audio *audioOpen(Ring *ring) {
+Audio *audioOpen(Ring *rings[channel_count]) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     Audio *a = new Audio();
-    a->ring = ring;
+    for (int ch = 0; ch < channel_count; ch++) a->captures[ch].ring = rings[ch];
     refreshSources(a);
     return a;
 }
 
 void audioClose(Audio *a) {
-    stopCapture(a);
+    for (Capture &c : a->captures) stopCapture(&c);
     playbackStop(a);
     if (a->player.joinable()) a->player.join();
     delete a;
@@ -342,15 +345,25 @@ std::vector<Source> audioSources(Audio *a) {
     return a->sources;
 }
 
-void audioStart(Audio *a, const Source &src) {
-    stopCapture(a);
+void audioStart(Audio *a, int ch, const Source &src) {
+    Capture *c = &a->captures[ch];
+    stopCapture(c);
     {
         std::lock_guard<std::mutex> lock(a->mu);
-        a->current = src;
-        a->active = true;
-        a->status = "connecting";
+        c->current = src;
+        c->active = true;
+        c->status = "connecting";
     }
-    a->capture = std::thread(captureLoop, a, src);
+    c->thread = std::thread(captureLoop, a, c, src);
+}
+
+void audioStop(Audio *a, int ch) {
+    Capture *c = &a->captures[ch];
+    stopCapture(c);
+    std::lock_guard<std::mutex> lock(a->mu);
+    c->active = false;
+    c->status = "off";
+    c->level = 0;
 }
 
 void audioTick(Audio *a) {
@@ -358,28 +371,34 @@ void audioTick(Audio *a) {
     double now = nowSeconds();
     if (now - a->checked_at < 1.0) return;
     a->checked_at = now;
-    Source cur;
-    if (!audioCurrent(a, &cur) || cur.kind != SourceKind::App || processAlive((DWORD)cur.id)) return;
-    // the app restarted so follow it to its new process
-    setStatus(a, "waiting for app");
-    refreshSources(a);
-    for (const Source &s : audioSources(a))
-        if (s.kind == SourceKind::App && s.name == cur.name) return audioStart(a, s);
+    for (int ch = 0; ch < channel_count; ch++) {
+        Source cur;
+        if (!audioCurrent(a, ch, &cur) || cur.kind != SourceKind::App || processAlive((DWORD)cur.id)) continue;
+        // the app restarted so follow it to its new process
+        setStatus(a, &a->captures[ch], "waiting for app");
+        refreshSources(a);
+        for (const Source &s : audioSources(a)) {
+            if (s.kind == SourceKind::App && s.name == cur.name) {
+                audioStart(a, ch, s);
+                break;
+            }
+        }
+    }
 }
 
-bool audioCurrent(Audio *a, Source *out) {
+bool audioCurrent(Audio *a, int ch, Source *out) {
     std::lock_guard<std::mutex> lock(a->mu);
-    if (a->active) *out = a->current;
-    return a->active;
+    if (a->captures[ch].active) *out = a->captures[ch].current;
+    return a->captures[ch].active;
 }
 
-std::string audioStatus(Audio *a) {
+std::string audioStatus(Audio *a, int ch) {
     std::lock_guard<std::mutex> lock(a->mu);
-    return a->status;
+    return a->captures[ch].status;
 }
 
-float audioLevel(Audio *a) {
-    return a->level.exchange(0.0f);
+float audioLevel(Audio *a, int ch) {
+    return a->captures[ch].level.exchange(0.0f);
 }
 
 static void playLoop(Audio *a) {
