@@ -9,6 +9,7 @@ static bool color_on = true;
 static std::string screen;
 static int last_w = 0, last_h = 0;
 static std::string keybuf;  // bytes read but not yet turned into keys
+static int mouse_x = 0, mouse_y = 0;
 
 void tuiSetColor(bool on) {
     color_on = on;
@@ -68,6 +69,18 @@ int tuiReadKey(std::string *text) {
             }
             used = end + 1;
             std::string params = keybuf.substr(2, end - 2);
+            // sgr mouse reports look like <button;x;y and end in M for press or m for release
+            if (!params.empty() && params[0] == '<') {
+                int b = 0, x = 0, y = 0;
+                sscanf(params.c_str() + 1, "%d;%d;%d", &b, &x, &y);
+                mouse_x = x;
+                mouse_y = y;
+                bool press = keybuf[end] == 'M';
+                keybuf.erase(0, used);
+                if (b == 64) return KeyWheelUp;
+                if (b == 65) return KeyWheelDown;
+                return b == 0 && press ? KeyClick : 0;
+            }
             switch (keybuf[end]) {
             case 'A': key = KeyUp; break;
             case 'B': key = KeyDown; break;
@@ -252,31 +265,62 @@ static std::string meter(float level) {
     return s + paint(white);
 }
 
+// clickable places on screen, rebuilt every frame
+struct HitBox {
+    int row, col0, col1;
+    Hit what;
+    int index;
+};
+static std::vector<HitBox> hits;
+
+static void addHit(int row, int col0, int width, Hit what, int index) {
+    hits.push_back({ row, col0, col0 + width - 1, what, index });
+}
+
+bool tuiHit(int x, int y, Hit *what, int *index) {
+    for (const HitBox &h : hits) {
+        if (y == h.row && x >= h.col0 && x <= h.col1) {
+            *what = h.what;
+            *index = h.index;
+            return true;
+        }
+    }
+    *what = Hit::None;
+    return false;
+}
+
+void tuiMouse(int *x, int *y) {
+    *x = mouse_x;
+    *y = mouse_y;
+}
+
 // title segments in display order and dropped from the highest drop rank when space runs out
 static void drawTitle(const View &v, int w) {
     struct Segment {
         std::string text;
         int drop;
+        Hit what;
     };
     std::vector<Segment> segs;
-    segs.push_back({ std::string(paint(bold)) + " earshot " + paint(normal), 5 });
+    segs.push_back({ std::string(paint(bold)) + " earshot " + paint(normal), 5, Hit::None });
     for (int ch = 0; ch < channel_count; ch++) {
         const char *tint = paint(ch == You ? cyan : magenta);
         if (!v.active[ch]) {
-            segs.push_back({ std::string(tint) + v.label[ch] + paint(gray) + " off" + paint(white), 6 });
+            segs.push_back({ std::string(tint) + v.label[ch] + paint(gray) + " off" + paint(white), 6, Hit::None });
             continue;
         }
         // the channel name and meter stay while the source name and state go first on narrow screens
         bool capturing = v.status[ch] == "capturing";
         std::string state = capturing ? "" : std::string(" ") + paint(yellow) + v.status[ch];
-        segs.push_back({ std::string(tint) + paint(bold) + v.label[ch] + paint(normal) + " " + meter(v.level[ch]), 0 });
-        segs.push_back({ v.active[ch]->label + state + paint(white), 3 });
+        segs.push_back({ std::string(tint) + paint(bold) + v.label[ch] + paint(normal) + " " + meter(v.level[ch]), 0, Hit::None });
+        segs.push_back({ v.active[ch]->label + state + paint(white), 3, Hit::None });
     }
     if (v.clip_seconds > 0)
-        segs.push_back({ std::string(paint(clip_badge)) + " ● CLIP " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
+        segs.push_back({ std::string(paint(clip_badge)) + " ● CLIP " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1, Hit::None });
     if (v.playback_left > 0)
-        segs.push_back({ std::string(paint(play_badge)) + " ▶ " + minutes(v.playback_left) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
-    segs.push_back({ "whisper " + std::string(v.model_loading ? std::string(paint(yellow)) + "loading " + paint(white) : "") + v.model + (v.whisper_busy ? std::string(paint(yellow)) + " ●" + paint(white) : "  "), 4 });
+        segs.push_back({ std::string(paint(play_badge)) + " ▶ " + minutes(v.playback_left) + " " + paint(reset) + paint(bar_bg) + paint(white), -1, Hit::None });
+    segs.push_back({ "whisper " + std::string(v.model_loading ? std::string(paint(yellow)) + "loading " + paint(white) : "") + v.model +
+                         (v.whisper_busy ? std::string(paint(yellow)) + " ●" + paint(white) : "  "), 4, Hit::Whisper });
     std::string ai = "ai " + (v.ai.empty() ? "" : v.ai + " ");
     switch (v.llm) {
     case LlmState::Off: ai += std::string(paint(gray)) + "off"; break;
@@ -286,7 +330,7 @@ static void drawTitle(const View &v, int w) {
     case LlmState::Working: ai += std::string(paint(yellow)) + "thinking"; break;
     case LlmState::Error: ai += std::string(paint(red)) + "error"; break;
     }
-    segs.push_back({ ai + paint(white), 3 });
+    segs.push_back({ ai + paint(white), 3, Hit::Ai });
 
     auto joined = [&]() {
         std::string s;
@@ -301,6 +345,12 @@ static void drawTitle(const View &v, int w) {
         segs.erase(segs.begin() + worst);
         s = joined();
     }
+    int col = 1;
+    for (size_t i = 0; i < segs.size(); i++) {
+        int width = textWidth(segs[i].text);
+        if (segs[i].what != Hit::None) addHit(1, col, width, segs[i].what, 0);
+        col += width + 3;
+    }
     moveTo(1, 1);
     screen += std::string(paint(bar_bg)) + paint(white);
     cell(s + paint(white), w);
@@ -310,29 +360,35 @@ static void drawTitle(const View &v, int w) {
 static void drawSources(const View &v, int col, int top, int width, int rows) {
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    std::string legend = std::string(paint(normal)) + "  " + paint(magenta) + "●" + paint(gray) + v.label[Them] + " " + paint(cyan) + "●" + paint(gray) + v.label[You];
-    cell(" Sources" + legend + (v.overlay == Overlay::Sources ? "  ↑↓ Enter on/off  Esc close" : ""), width);
+    cell(" Sources" + std::string(paint(normal)) + paint(gray) + (v.overlay == Overlay::Sources ? "  ↑↓ Enter pick  Esc close" : "  ↑↓ Enter"), width);
     screen += paint(reset);
-    const std::vector<Source> &list = *v.sources;
     int room = rows - 1;
     int first = v.selected >= room ? v.selected - room + 1 : 0;
     int row = top + 1;
-    for (int i = first; i < (int)list.size() && row < top + rows; i++, row++) {
-        const Source &s = list[i];
-        bool them = v.active[Them] && sameSource(*v.active[Them], s), you = v.active[You] && sameSource(*v.active[You], s);
-        bool on = them || you;
-        std::string mark;
-        if (them) mark = std::string(paint(magenta)) + "●";
-        else if (you) mark = std::string(paint(cyan)) + "●";
-        else if (s.kind == SourceKind::App) mark = std::string(paint(magenta)) + "♪";
-        else if (s.kind == SourceKind::System || s.kind == SourceKind::Mic) mark = std::string(paint(blue)) + "◆";
-        else mark = std::string(paint(gray)) + "·";
-        bool device = s.kind == SourceKind::Output || s.kind == SourceKind::Input;
-        std::string line = std::string(i == v.selected ? "›" : " ") + mark + paint(fg_default) + " " + (device && !on ? paint(dim) : "") + s.label;
+    for (int i = first; i < (int)v.rows.size() && row < top + rows; i++, row++) {
+        const SourceRow &r = v.rows[i];
         moveTo(row, col);
+        const char *tint = paint(r.channel == You ? cyan : magenta);
+        if (r.header) {
+            screen += std::string(tint) + paint(bold);
+            cell(" " + r.label, width);
+            screen += paint(reset);
+            continue;
+        }
+        std::string mark;
+        if (r.active) mark = std::string(tint) + "●";
+        else if (r.off) mark = std::string(paint(gray)) + "○";
+        else if (r.kind == SourceKind::App) mark = std::string(paint(magenta)) + "♪";
+        else if (r.kind == SourceKind::System || r.kind == SourceKind::Mic) mark = std::string(paint(blue)) + "◆";
+        else mark = std::string(paint(gray)) + "·";
+        bool quiet = r.off || r.kind == SourceKind::Output || r.kind == SourceKind::Input;
+        std::string state = r.active && !r.status.empty() && r.status != "capturing" ? std::string("  ") + paint(yellow) + r.status : "";
+        std::string line = std::string(i == v.selected ? "›" : " ") + " " + mark + paint(fg_default) + " " +
+                           (quiet && !r.active ? paint(dim) : "") + r.label + paint(normal) + state;
         if (i == v.selected) screen += paint(inverse);
         cell(line, width);
         screen += paint(reset);
+        addHit(row, col, width, Hit::Source, i);
     }
     for (; row < top + rows; row++) {
         moveTo(row, col);
@@ -361,40 +417,38 @@ static void drawHelp(const View &v, int col, int top, int width, int rows) {
         while (textWidth(k) < 10) k += " ";
         lines.push_back(std::string(paint(yellow)) + paint(bold) + k + paint(normal) + paint(fg_default) + what);
     }
+    lines.push_back("");
+    lines.push_back(std::string(paint(gray)) + "The mouse wheel scrolls, and clicking a source, a list row,");
+    lines.push_back(std::string(paint(gray)) + "or whisper or ai in the title bar picks it.");
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
     cell(" Keys" + std::string(paint(normal)) + paint(gray) + "  any key closes", width);
     screen += paint(reset);
-    drawText(top + 1, col, width, rows - 1, lines, 0, "");
+    drawText(top + 1, col, width, rows - 1, lines, (int)lines.size() > rows - 1 ? (int)lines.size() - (rows - 1) : 0, "");
 }
 
-// settings rows with the selected one's help and any edit line kept at the bottom of the pane
-static void drawSettings(const View &v, int col, int top, int width, int rows) {
+// the settings screen and the pickers: rows with the selected one's help kept at the bottom
+static void drawList(const View &v, int col, int top, int width, int rows) {
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    cell(" Settings" + std::string(paint(normal)) + paint(gray) + "  saved as you go to the config file", width);
+    cell(" " + v.list_title + std::string(paint(normal)) + paint(gray) + "  ↑↓ choose  Enter pick  Esc back", width);
     screen += paint(reset);
     std::vector<std::string> help;
-    if (v.editing_setting) {
-        wrapText(v.edit + "▏", width - 3, &help);
-        if (help.size() > 2) help.erase(help.begin(), help.end() - 2);
-        for (std::string &h : help) h = std::string(paint(yellow)) + h;
-        help.insert(help.begin(), std::string(paint(gray)) + "Enter save  Esc cancel  Ctrl-U clear");
-    } else {
-        wrapText(v.settings_help, width - 3, &help);
-        if (help.size() > 2) help.resize(2);
-        for (std::string &h : help) h = std::string(paint(gray)) + h;
-        if (v.settings_selected < (int)v.settings.size() && v.settings[v.settings_selected].restart)
-            help.push_back(std::string(paint(yellow)) + "applies the next time earshot starts");
-    }
+    wrapText(v.list_hint, width - 3, &help);
+    if (help.size() > 3) help.resize(3);
+    if (v.list_selected < (int)v.list.size() && v.list[v.list_selected].restart)
+        help.push_back(std::string(paint(yellow)) + "applies the next time earshot starts");
     int list_rows = rows - 1 - (int)help.size() - 1;
-    int first = v.settings_selected - list_rows / 2;
-    if (first + list_rows > (int)v.settings.size()) first = (int)v.settings.size() - list_rows;
+    int first = v.list_selected - list_rows / 2;
+    if (first + list_rows > (int)v.list.size()) first = (int)v.list.size() - list_rows;
     if (first < 0) first = 0;
-    int label_w = std::min(26, width / 2);
+    int label_w = 0;
+    for (const ListRow &l : v.list)
+        if (!l.header && !l.value.empty()) label_w = std::max(label_w, textWidth(l.label) + 6);
+    label_w = std::min(label_w, width / 2);
     int row = top + 1;
-    for (int i = first; i < (int)v.settings.size() && row < top + 1 + list_rows; i++, row++) {
-        const SettingLine &l = v.settings[i];
+    for (int i = first; i < (int)v.list.size() && row < top + 1 + list_rows; i++, row++) {
+        const ListRow &l = v.list[i];
         moveTo(row, col);
         if (l.header) {
             screen += std::string(paint(bold)) + paint(cyan);
@@ -402,12 +456,13 @@ static void drawSettings(const View &v, int col, int top, int width, int rows) {
             screen += paint(reset);
             continue;
         }
-        std::string label = (i == v.settings_selected ? " › " : "   ") + l.label;
+        std::string label = std::string(i == v.list_selected ? " › " : "   ") + (l.current ? std::string(paint(green)) + "● " + paint(fg_default) : "  ") + l.label;
         while (textWidth(label) < label_w) label += " ";
-        const char *tint = l.value == "on" ? green : l.value == "off" || l.value == "empty" ? gray : fg_default;
-        if (i == v.settings_selected) screen += paint(inverse);
-        cell(label + paint(tint) + l.value + (l.restart ? std::string(paint(gray)) + " ↻" : ""), width);
+        const char *tint = l.value == "on" ? green : l.value == "off" || l.value == "empty" ? gray : l.current ? fg_default : gray;
+        if (i == v.list_selected) screen += paint(inverse);
+        cell(label + "  " + paint(tint) + l.value + (l.restart ? std::string(paint(gray)) + " ↻" : ""), width);
         screen += paint(reset);
+        addHit(row, col, width, Hit::Item, i);
     }
     for (; row < top + rows - (int)help.size(); row++) {
         moveTo(row, col);
@@ -415,32 +470,20 @@ static void drawSettings(const View &v, int col, int top, int width, int rows) {
     }
     for (const std::string &h : help) {
         moveTo(row++, col);
-        cell("  " + h, width);
+        cell("  " + std::string(paint(gray)) + h, width);
         screen += paint(reset);
     }
 }
 
-static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
+// the transcript fills the pane, with the ai's notes under it only in notes mode
+static int drawMain(const View &v, int rx, int rw, int top, int bottom) {
     int row = top;
-    moveTo(row++, rx);
-    cell(std::string(paint(bold)) + paint(cyan) + " Instruction" + paint(reset) + paint(gray) + "  " + (v.editing ? "Enter save  Esc cancel  Ctrl-U clear" : "") + paint(reset), rw);
-    std::vector<std::string> lines;
-    const char *ins_color = paint(yellow);
-    if (v.editing) wrapText(v.edit + "▏", rw - 1, &lines);
-    else if (!v.instruction.empty()) wrapText(v.instruction, rw - 1, &lines);
-    else {
-        wrapText("none so the ai is off", rw - 1, &lines);
-        ins_color = paint(gray);
-    }
-    if (lines.size() > 2) lines.erase(lines.begin(), lines.end() - 2);
-    row = drawText(row, rx, rw, 2, lines, 0, ins_color);
-
     int avail = bottom - row;
-    int transcript_rows = v.ai.empty() ? avail : avail / 2;
-    int processed_rows = avail - transcript_rows;
+    int transcript_rows = v.notes ? avail * 2 / 3 : avail;
+    int notes_rows = avail - transcript_rows;
 
     // paragraphs with the speaker and time once at the start and a hanging indent after
-    std::vector<std::string> raw, processed;
+    std::vector<std::string> raw, notes;
     {
         std::lock_guard<std::mutex> lock(v.tr->mu);
         std::vector<Paragraph> paras = transcriptParagraphs(v.tr, 0, nowSeconds());
@@ -483,21 +526,30 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
             if (i + 1 < paras.size()) raw.push_back("");
         }
         for (const std::string &p : v.tr->processed) {
-            wrapText(p, rw - 2, &processed);
-            processed.push_back("");
+            wrapText(p, rw - 2, &notes);
+            notes.push_back("");
         }
     }
-
-    moveTo(row++, rx);
-    cell(std::string(paint(bold)) + paint(cyan) + " Transcript" + paint(reset) + paint(gray) + "  " +
-         (v.scroll ? "scrolled  PgDn to follow" : v.transcript_path) + paint(reset), rw);
-    row = drawText(row, rx, rw, transcript_rows - 1, raw, v.scroll, "");
-    if (processed_rows > 0) {
-        moveTo(row++, rx);
-        cell(std::string(paint(bold)) + paint(cyan) + " AI" + paint(reset) + paint(gray) + (v.ai.empty() ? "  off" : "  " + v.ai) + paint(reset), rw);
-        if (!processed.empty() && processed.back().empty()) processed.pop_back();
-        drawText(row, rx, rw, processed_rows - 1, processed, 0, paint(green));
+    if (raw.empty() && !v.empty_hint.empty()) {
+        raw.push_back("");
+        wrapText(v.empty_hint, rw - 4, &raw);
+        for (std::string &l : raw) l = std::string(paint(gray)) + " " + l;
     }
+
+    int rows = transcript_rows - 1;
+    int max_scroll = (int)raw.size() > rows ? (int)raw.size() - rows : 0;
+    int scroll = std::min(v.scroll, max_scroll);
+    moveTo(row++, rx);
+    std::string where = scroll ? "↑ " + std::to_string(scroll) + (scroll == 1 ? " line" : " lines") + " up · End or wheel down to follow" : v.transcript_path;
+    cell(std::string(paint(bold)) + paint(cyan) + " Transcript" + paint(reset) + paint(gray) + "  " + where + paint(reset), rw);
+    row = drawText(row, rx, rw, rows, raw, scroll, "");
+    if (notes_rows > 0) {
+        moveTo(row++, rx);
+        cell(std::string(paint(bold)) + paint(cyan) + " AI notes" + paint(reset) + paint(gray) + "  " + v.ai + paint(reset), rw);
+        if (!notes.empty() && notes.back().empty()) notes.pop_back();
+        drawText(row, rx, rw, notes_rows - 1, notes, 0, paint(green));
+    }
+    return max_scroll;
 }
 
 // key hints that fit, ending with a pointer to the full list when some had to go
@@ -521,10 +573,11 @@ static void drawFooter(const View &v, int w) {
     cell(s, w);
 }
 
-void tuiDraw(const View &v) {
+int tuiDraw(const View &v) {
     int w, h;
     terminalSize(&w, &h);
     screen.clear();
+    hits.clear();
     // a resize can leave reflowed rows behind so start from a clean screen
     if (w != last_w || h != last_h) screen = "\x1b[2J";
     last_w = w;
@@ -533,14 +586,14 @@ void tuiDraw(const View &v) {
         screen += "\x1b[H\x1b[2Jterminal too small";
         terminalWrite(screen);
         last_w = 0;
-        return;
+        return 0;
     }
     drawTitle(v, w);
     int top = 2, bottom = h - 1, rows = bottom - top + 1;
     bool side = w >= 72;
     int rx = 1, rw = w;
     if (side) {
-        const int left = w / 4 < 22 ? 22 : w / 4 > 32 ? 32 : w / 4;
+        const int left = w / 4 < 24 ? 24 : w / 4 > 34 ? 34 : w / 4;
         drawSources(v, 1, top, left, rows);
         for (int row = top; row <= bottom; row++) {
             moveTo(row, left + 1);
@@ -549,13 +602,25 @@ void tuiDraw(const View &v) {
         rx = left + 2;
         rw = w - left - 1;
     }
+    int max_scroll = 0;
     if (v.overlay == Overlay::Help) drawHelp(v, rx, top, rw, rows);
-    else if (v.overlay == Overlay::Settings) drawSettings(v, rx, top, rw, rows);
+    else if (v.overlay == Overlay::Settings || v.overlay == Overlay::Picker) drawList(v, rx, top, rw, rows);
     else if (v.overlay == Overlay::Sources && !side) drawSources(v, rx, top, rw, rows);
-    else drawMain(v, rx, rw, top, bottom + 1);
+    else max_scroll = drawMain(v, rx, rw, top, bottom + 1);
 
     moveTo(h, 1);
-    if (!v.message.empty()) {
+    if (v.editing) {
+        screen += std::string(paint(foot_bg)) + paint(white);
+        std::string field = v.edit + "▏";
+        int room = w - textWidth(v.edit_title) - 34;
+        // keep the end of a long value in view while typing
+        while (room > 8 && textWidth(field) > room) {
+            do field.erase(0, 1);
+            while (!field.empty() && ((unsigned char)field[0] & 0xC0) == 0x80);
+        }
+        cell(" " + std::string(paint(bold)) + v.edit_title + paint(normal) + " " + paint(yellow) + field + paint(gray) +
+             "  Enter save  Esc cancel  Ctrl-U clear", w);
+    } else if (!v.message.empty()) {
         screen += paint(v.message_error ? error_bg : info_bg);
         cell(" " + v.message, w);
     } else {
@@ -563,6 +628,7 @@ void tuiDraw(const View &v) {
     }
     screen += paint(reset);
     terminalWrite(screen);
+    return max_scroll;
 }
 
 bool tuiWide() {

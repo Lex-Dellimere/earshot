@@ -258,7 +258,25 @@ static void testSettings() {
     CHECK_EQ(settingDisplay(cfg, find("mic")), std::string("off"));
 }
 
+static void testAiFix() {
+    auto lines = aiNumberedLines("Here you go:\n1. And so my fellow Americans!\n2. (Them) Ask not.\n 3) Them: what your country\n**4.** skip\n5.\n");
+    CHECK_EQ(lines.size(), (size_t)4);
+    CHECK_EQ(lines[3].second, std::string("skip"));
+    CHECK_EQ(lines[0].first, 1);
+    CHECK_EQ(lines[0].second, std::string("And so my fellow Americans!"));
+    CHECK_EQ(lines[1].second, std::string("Ask not."));
+    CHECK_EQ(lines[2].first, 3);
+    CHECK_EQ(lines[2].second, std::string("what your country"));
+    // small fixes pass and rewrites or inventions do not
+    CHECK(aiCloseEnough("And so am I fellow America! As not!", "And so my fellow Americans! Ask not!"));
+    CHECK(aiCloseEnough("download and install the tour software", "download and install the Tor software."));
+    CHECK(!aiCloseEnough("I'm talking really loud right now", "The speaker says they are talking loudly at the moment."));
+    CHECK(!aiCloseEnough("Oh", ""));
+    CHECK(!aiCloseEnough("hello there", "I am doing fine thanks for asking"));
+}
+
 int main() {
+    testAiFix();
     testSettings();
     testMigration();
     testAiParse();

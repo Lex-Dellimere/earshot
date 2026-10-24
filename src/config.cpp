@@ -57,6 +57,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(ai_slots[6], nullptr),
     TEXT(ai_slots[7], nullptr),
     TEXT(ai_slots[8], nullptr),
+    TEXT(ai_mode, "fix corrects the transcript in place, notes writes the ai's own output in a pane under it"),
     TEXT(instruction, "what the ai does with the transcript or empty to turn it off"),
     TEXT(llm_url, "endpoint for slots that name no url"),
     NUMBER(llm_every, "seconds between ai passes"),

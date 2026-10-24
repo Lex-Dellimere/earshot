@@ -94,11 +94,11 @@ void terminalInit() {
     GetConsoleMode(out, &saved_out_mode);
     SetConsoleMode(in, ENABLE_VIRTUAL_TERMINAL_INPUT);
     SetConsoleMode(out, saved_out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING | DISABLE_NEWLINE_AUTO_RETURN);
-    terminalWrite("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J");
+    terminalWrite("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[?1000h\x1b[?1006h\x1b[2J");
 }
 
 void terminalRestore() {
-    terminalWrite("\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
+    terminalWrite("\x1b[0m\x1b[?1000l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
     SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), saved_in_mode);
     SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), saved_out_mode);
 }

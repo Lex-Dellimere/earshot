@@ -29,13 +29,14 @@ static const std::vector<Setting> list = {
 
     { "", "AI", "", Setting::Header },
     { "ai", "AI model", "Which slot below is used, or off. The a key does the same while listening.", Setting::Slot },
-    { "instruction", "Instruction", "What the AI does with the transcript. Empty turns it off.", Setting::Text },
+    { "ai_mode", "AI does", "fix corrects misheard words inside the transcript; notes writes its own output, like a summary, in a pane below.", Setting::Choice, 0, 0, 0, false, { "fix", "notes" } },
+    { "instruction", "Instruction", "Extra guidance for fixing, or what to write in notes mode. Empty turns the AI off.", Setting::Text },
     { "ai1", "Slot 1", "An ollama model name, a name @ an openai compatible url, or a path to a .gguf file.", Setting::Text },
     { "ai2", "Slot 2", "An ollama model name, a name @ an openai compatible url, or a path to a .gguf file.", Setting::Text },
     { "ai3", "Slot 3", "An ollama model name, a name @ an openai compatible url, or a path to a .gguf file.", Setting::Text },
     { "ai4", "Slot 4", "An ollama model name, a name @ an openai compatible url, or a path to a .gguf file.", Setting::Text },
     { "ai5", "Slot 5", "An ollama model name, a name @ an openai compatible url, or a path to a .gguf file.", Setting::Text },
-    { "llm_every", "Seconds between passes", "How often new lines go to the AI.", Setting::Number, 5, 5, 300 },
+    { "llm_every", "Seconds between notes", "How often new lines go to the AI in notes mode. Fixing runs as lines arrive.", Setting::Number, 5, 5, 300 },
     { "llm_url", "Default endpoint", "Used by slots that name no url.", Setting::Text },
     { "llm_start", "Start command", "Run when the endpoint is down and stopped on exit.", Setting::Text, 0, 0, 0, true },
 

@@ -86,21 +86,28 @@ earshot --file talk.wav    # transcribe a wav file and exit
 earshot --set beam=5       # override any config value for one run
 ```
 
+The left side lists what you can **hear** (system, apps, outputs) and what can
+be your **mic**, each with an **off** row. Enter or a click picks one; the
+current one is marked ● and shows its state, like "idle" when an app is paused.
+On narrow terminals the list is behind Tab. When the transcript is empty it says
+why.
+
 Default keys (all configurable in settings):
 
 | tui key | global hotkey | |
 |---|---|---|
-| `↑↓` `Enter` | | in the sources list: Enter on a mic or input sets You, on anything else sets Them, on the active one turns that channel off |
-| `Tab` | | the sources list on narrow terminals |
+| `↑↓` `Enter` | | pick a source (or click it) |
+| `w` | | choose the whisper model from a list (or click "whisper" in the title bar) |
+| `a` | | choose the AI model or turn it off (or click "ai") |
 | `s` | | settings |
+| wheel, `PgUp` `PgDn` | | scroll the transcript; `Home` goes to the top, `End` follows again |
 | `c` | ctrl+alt+c | start a clip that begins `before` seconds ago; press again to stop |
 | `r` | ctrl+alt+r | save the last `replay` seconds right now |
 | `space` | ctrl+alt+p | play back the last `playback` seconds; press again to stop |
-| `a` | | next AI model slot, then off |
-| `w` | | next whisper model; it loads in the background and swaps in without a gap |
-| `i` / `p` | | edit the AI instruction / run it now |
+| `i` / `p` | | edit the AI instruction / run the AI now |
 | `t` | | timestamps on or off |
 | `o` | | open the transcript folder |
+| `Tab` | | the sources list on narrow terminals |
 | `x` / `q` / `?` | | clear / quit / all keys |
 
 **Wayland:** bind keys in your compositor to `earshot --send clip|replay|play`:
@@ -207,9 +214,15 @@ out of scope for a small dependency-free binary.
 
 ## AI
 
-The AI is on by default with the instruction "fix words that were clearly
-misheard and add punctuation", and its output appears in the AI pane. It needs
-[Ollama](https://ollama.com) with a model pulled:
+The AI is on by default and corrects the transcript **in place**: grey live
+text becomes whisper's words, and the AI then fixes misheard words inside those
+same paragraphs. It gets numbered lines and returns them numbered, and a
+correction is only taken when it changes a few words, so a model that rewrites
+or invents is ignored. The transcript file waits for the corrections, up to 30 s.
+Set `ai_mode = notes` for the old behaviour, where the AI follows your
+instruction (like "summarise as bullets") in a pane under the transcript.
+
+It needs [Ollama](https://ollama.com) with a model pulled:
 
 ```sh
 ollama pull gemma3:4b
@@ -230,9 +243,11 @@ For hosted endpoints, set `EARSHOT_API_KEY` in your environment. The key goes
 to curl through a private temp file, so it never shows in `ps`.
 
 Small local models are cautious editors rather than fixers. In testing,
-gemma3:4b kept the speaker names and changed the least; qwen2.5:3b and
-llama3.2:3b sometimes invented words. None of them could recover a word
-whisper misheard badly, so accuracy comes mostly from the whisper model.
+gemma3:4b returned lines unchanged, which is safe but rarely helps; qwen2.5:3b
+fixed "tour software" to "tor software" but also invented words. None of the
+3-4B models could recover a word whisper misheard badly. A larger model in a
+slot does better; otherwise accuracy comes from the whisper model and the
+noise stage.
 
 With the AI off (`ai = 0` or an empty instruction), nothing leaves your machine
 and nothing extra runs.

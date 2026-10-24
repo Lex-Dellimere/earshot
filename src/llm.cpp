@@ -8,6 +8,7 @@
 
 struct Job {
     AiModel model;
+    bool fix;
     std::string instruction, context, text;
 };
 
@@ -205,7 +206,7 @@ static std::string explain(const AiModel &m, const std::string &message) {
 
 static void request(Llm *llm, const Job &job) {
     const AiModel &m = job.model;
-    // tested against gemma3 qwen2.5 and llama3.2: this keeps speaker names and changes the least
+    // notes mode; tested against gemma3 qwen2.5 and llama3.2 this keeps speaker names and changes the least
     std::string system =
         "You work on a live speech-to-text transcript that arrives in chunks. Speech recognition often mishears "
         "words that sound alike, especially over music or noise.\n"
@@ -220,6 +221,21 @@ static void request(Llm *llm, const Job &job) {
     std::string user;
     if (!job.context.empty()) user += "Earlier output (context only):\n" + job.context + "\n\n";
     user += "NEW chunk:\n" + job.text;
+    // fix mode corrects numbered lines that go back into the transcript in place
+    if (job.fix) {
+        system =
+            "You correct a live speech-to-text transcript. Speech recognition mishears words that sound alike, "
+            "especially over music or noise.\n"
+            "You get numbered lines. Return every numbered line in order as \"N. text\".\n"
+            "- Change a word only when it is clearly misheard: it makes no sense where it is and a word that sounds alike fits.\n"
+            "- Fix punctuation and capital letters.\n"
+            "- Never rephrase, shorten, summarise, translate, censor or add anything, and never add names. Keep slang and swearing as spoken.\n"
+            "- If a line is already right, return it unchanged.\n"
+            "- Output only the numbered lines.";
+        if (!job.instruction.empty() && job.instruction != default_instruction) system += "\nAlso: " + job.instruction;
+        user = job.context.empty() ? "" : "Earlier lines, for context only:\n" + job.context + "\n\n";
+        user += "Lines to correct:\n" + job.text;
+    }
 
     std::string body = "{\"model\":";
     jsonEscape(&body, m.name);
@@ -309,13 +325,13 @@ void llmDestroy(Llm *llm) {
     delete llm;
 }
 
-bool llmSubmit(Llm *llm, const AiModel &model, const std::string &instruction, const std::string &context, const std::string &text) {
+bool llmSubmit(Llm *llm, const AiModel &model, bool fix, const std::string &instruction, const std::string &context, const std::string &text) {
     LlmState state = llm->state;
     if (state == LlmState::Working || state == LlmState::Starting || state == LlmState::Importing) return false;
     llm->state = LlmState::Working;
     {
         std::lock_guard<std::mutex> lock(llm->mu);
-        llm->jobs.push_back({ model, instruction, context, text });
+        llm->jobs.push_back({ model, fix, instruction, context, text });
     }
     llm->wake.notify_one();
     return true;

@@ -54,6 +54,7 @@ struct Config {
     std::string ai_slots[9] = { "gemma3:4b", "qwen2.5:3b", "llama3.2" };
     std::string instruction = default_instruction;
     std::string llm_url = "http://127.0.0.1:11434/v1/chat/completions";
+    std::string ai_mode = "fix";
     float llm_every = 20;
     std::string llm_start = "ollama serve";
 
@@ -140,6 +141,9 @@ struct Line {
     double end = 0;        // wall time the speech ended
     double added = 0;      // wall time the text arrived
     bool dropped = false;  // an echo of the other channel
+    uint64_t id = 0;
+    std::string heard;     // whisper's text before any ai correction
+    int ai = 0;            // 0 waiting for the ai, 1 sent, 2 done
 };
 
 struct Paragraph {
@@ -154,6 +158,7 @@ struct Transcript {
     std::mutex mu;
     std::vector<Line> raw;
     std::vector<std::string> processed;
+    uint64_t next_id = 1;
     std::string partial[channel_count];  // the sentence being spoken right now, replaced by its line
     double partial_time[channel_count] = {};
 };
@@ -161,7 +166,8 @@ struct Transcript {
 void transcriptAdd(Transcript *tr, Line line);
 void transcriptPartial(Transcript *tr, int channel, double time, const std::string &text);
 std::vector<std::string> plainWords(const std::string &s);
-std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, double now, const bool *pending = nullptr);
+std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, double now, const bool *pending = nullptr,
+                                            bool wait_ai = false);
 
 struct Transcriber;
 Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note);
@@ -192,7 +198,9 @@ AiModel aiParse(const std::string &slot, const std::string &default_url);
 struct Llm;
 Llm *llmCreate(const Config &cfg);
 void llmDestroy(Llm *llm);
-bool llmSubmit(Llm *llm, const AiModel &model, const std::string &instruction, const std::string &context, const std::string &text);
+bool llmSubmit(Llm *llm, const AiModel &model, bool fix, const std::string &instruction, const std::string &context, const std::string &text);
+std::vector<std::pair<int, std::string>> aiNumberedLines(const std::string &reply);
+bool aiCloseEnough(const std::string &heard, const std::string &fixed);
 LlmState llmState(Llm *llm);
 bool llmTakeResult(Llm *llm, std::string *text, bool *ok);
 
@@ -289,18 +297,36 @@ int listSources();
 enum Key {
     KeyNone = -1, KeyTab = 9, KeyEnter = 13, KeyEsc = 27, KeyBackspace = 127,
     KeyUp = 1000, KeyDown, KeyLeft, KeyRight, KeyPageUp, KeyPageDown, KeyHome, KeyEnd, KeyDelete, KeyBackTab,
+    KeyWheelUp, KeyWheelDown, KeyClick,
 };
 
-enum class Overlay { None, Sources, Help, Settings };
+enum class Overlay { None, Sources, Help, Settings, Picker };
 
-struct SettingLine {
+// one row of the sources pane: a group title, a source, or the row that turns a channel off
+struct SourceRow {
+    int channel;
     bool header;
-    std::string label, value;
-    bool restart;
+    bool off;
+    bool active;
+    SourceKind kind;
+    std::string label;
+    std::string status;
 };
+
+// one row of the settings screen or a picker
+struct ListRow {
+    bool header;
+    std::string label;
+    std::string value;
+    bool current;  // marked as the one in use
+    bool restart;  // only applies when earshot starts
+};
+
+// what a mouse click landed on
+enum class Hit { None, Source, Item, Whisper, Ai };
 
 struct View {
-    const std::vector<Source> *sources;
+    std::vector<SourceRow> rows;
     int selected;
     const Source *active[channel_count];
     std::string label[channel_count];
@@ -309,33 +335,37 @@ struct View {
     double clip_seconds;
     double playback_left;
     bool whisper_busy;
+    bool model_loading;
     std::string model;
-    std::string instruction;
     std::string ai;
-    bool editing;
-    std::string edit;
     LlmState llm;
+    bool notes;  // the ai writes notes in a pane under the transcript instead of fixing it
     Transcript *tr;
     int scroll;
+    std::string empty_hint;
     std::string message;
     bool message_error;
+    bool editing;  // the bottom line becomes an edit line
+    std::string edit_title;
+    std::string edit;
     std::vector<std::pair<std::string, std::string>> help;
     Overlay overlay;
     bool timestamps;
     bool labels;
-    bool model_loading;
-    std::vector<SettingLine> settings;
-    int settings_selected = 0;
-    std::string settings_help;
-    bool editing_setting = false;
     std::string transcript_path;
+    std::string list_title;
+    std::string list_hint;
+    std::vector<ListRow> list;
+    int list_selected;
 };
 
 void tuiSetColor(bool on);
 std::string clockText(double t);
 int tuiReadKey(std::string *text);
 int keyCode(const std::string &name);
-void tuiDraw(const View &v);
+int tuiDraw(const View &v);  // returns how far the transcript can scroll
+bool tuiHit(int x, int y, Hit *what, int *index);
+void tuiMouse(int *x, int *y);
 bool tuiWide();
 int textWidth(const std::string &s);
 void wrapText(const std::string &text, int w, std::vector<std::string> *out);
