@@ -19,6 +19,17 @@ else()
 endif()
 option(EARSHOT_CUDA   "whisper on nvidia gpus (needs nvcc)" OFF)
 option(EARSHOT_VULKAN "whisper on any vulkan gpu (needs glslc)" OFF)
+option(EARSHOT_TESTS  "build the unit tests" OFF)
+set(EARSHOT_SANITIZE "" CACHE STRING "sanitizers like address;undefined or thread")
+
+# sanitizers go on everything including whisper so thread checks see all of it
+if(EARSHOT_SANITIZE)
+    string(REPLACE ";" "," sanitizers "${EARSHOT_SANITIZE}")
+    add_compile_options(-fsanitize=${sanitizers} -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=${sanitizers})
+    set(EARSHOT_LTO OFF)
+    set(EARSHOT_STRIP OFF)
+endif()
 
 set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ${EARSHOT_LTO})
 add_compile_options(-ffunction-sections -fdata-sections $<$<COMPILE_LANGUAGE:C>:-fno-asynchronous-unwind-tables>)
@@ -57,8 +68,8 @@ if(TARGET ggml-vulkan AND TARGET SPIRV-Headers::SPIRV-Headers)
     target_link_libraries(ggml-vulkan PRIVATE SPIRV-Headers::SPIRV-Headers)
 endif()
 
-add_executable(earshot
-    src/main.cpp
+# everything but main so the unit tests link the same code
+add_library(earshot_core OBJECT
     src/config.cpp
     src/ring.cpp
     src/wav.cpp
@@ -66,22 +77,37 @@ add_executable(earshot
     src/transcribe.cpp
     src/llm.cpp
     src/tui.cpp)
-target_compile_options(earshot PRIVATE -Wall -Wextra -Wno-missing-field-initializers -fno-exceptions -fno-rtti)
-target_link_libraries(earshot PRIVATE whisper)
+target_compile_options(earshot_core PUBLIC -Wall -Wextra -Wno-missing-field-initializers -fno-exceptions -fno-rtti)
+target_link_libraries(earshot_core PUBLIC whisper)
 
 if(WIN32)
-    enable_language(RC)
-    target_sources(earshot PRIVATE src/windows/audio_wasapi.cpp src/windows/platform_windows.cpp src/windows/earshot.rc)
-    target_compile_definitions(earshot PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_link_libraries(earshot PRIVATE ole32 mmdevapi)
-    target_link_options(earshot PRIVATE -static)
+    target_sources(earshot_core PRIVATE src/windows/audio_wasapi.cpp src/windows/platform_windows.cpp)
+    target_compile_definitions(earshot_core PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_link_libraries(earshot_core PUBLIC ole32 mmdevapi)
 else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
     find_package(Threads REQUIRED)
-    target_sources(earshot PRIVATE src/linux/audio_pipewire.cpp src/linux/platform_linux.cpp)
-    target_link_libraries(earshot PRIVATE PkgConfig::PIPEWIRE Threads::Threads ${CMAKE_DL_LIBS})
+    target_sources(earshot_core PRIVATE src/linux/audio_pipewire.cpp src/linux/platform_linux.cpp)
+    target_link_libraries(earshot_core PUBLIC PkgConfig::PIPEWIRE Threads::Threads ${CMAKE_DL_LIBS})
+endif()
+
+add_executable(earshot src/main.cpp)
+target_link_libraries(earshot PRIVATE earshot_core)
+if(WIN32)
+    enable_language(RC)
+    target_sources(earshot PRIVATE src/windows/earshot.rc)
+    target_link_options(earshot PRIVATE -static)
+else()
     target_link_options(earshot PRIVATE -Wl,--as-needed)
+endif()
+
+if(EARSHOT_TESTS)
+    enable_testing()
+    add_executable(earshot-tests tests/test_main.cpp)
+    target_include_directories(earshot-tests PRIVATE src)
+    target_link_libraries(earshot-tests PRIVATE earshot_core)
+    add_test(NAME unit COMMAND earshot-tests)
 endif()
 
 if(EARSHOT_STRIP)

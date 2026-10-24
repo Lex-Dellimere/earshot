@@ -19,7 +19,7 @@ struct Transcriber {
     whisper_context *ctx = nullptr;
     whisper_vad_context *vad = nullptr;
     std::thread thread;
-    std::atomic<bool> stop{ false }, reset{ false }, busy{ false };
+    std::atomic<bool> stop{ false }, reset{ false }, busy{ false }, drain{ false };
     std::string last_text;
 };
 
@@ -106,6 +106,7 @@ static void worker(Transcriber *t) {
         uint64_t total = ringTotal(t->ring), from = cursor;
         size_t n = ringRead(t->ring, &from, frames, capture_rate / 10);
         if (n == 0) {
+            if (t->drain) break;
             sleepMs(30);
             continue;
         }
@@ -221,10 +222,20 @@ bool transcriberBusy(Transcriber *t) {
     return t->busy;
 }
 
-void transcriberStop(Transcriber *t) {
-    t->stop = true;
+static void finish(Transcriber *t) {
     t->thread.join();
     if (t->vad) whisper_vad_free(t->vad);
     whisper_free(t->ctx);
     delete t;
+}
+
+void transcriberStop(Transcriber *t) {
+    t->stop = true;
+    finish(t);
+}
+
+// transcribes everything left in the ring before stopping
+void transcriberDrain(Transcriber *t) {
+    t->drain = true;
+    finish(t);
 }

@@ -1,4 +1,6 @@
 #include "earshot.h"
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <ctime>
 
@@ -61,4 +63,71 @@ void clipEnd(Clip *clip) {
     writeHeader(clip->file, clip->frames);
     fclose(clip->file);
     clip->file = nullptr;
+}
+
+static uint32_t get32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint16_t get16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+
+// reads a 16 or 24 bit pcm or 32 bit float wav as 48k stereo frames for the frontend
+bool wavRead(const std::string &path, std::vector<int16_t> *frames, std::string *err) {
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) return *err = "cannot open " + path, false;
+    std::vector<uint8_t> file;
+    uint8_t buf[65536];
+    for (size_t n; (n = fread(buf, 1, sizeof buf, f)) > 0;) file.insert(file.end(), buf, buf + n);
+    fclose(f);
+    if (file.size() < 12 || memcmp(file.data(), "RIFF", 4) != 0 || memcmp(file.data() + 8, "WAVE", 4) != 0)
+        return *err = path + " is not a wav file", false;
+
+    int format = 0, channels = 0, bits = 0;
+    uint32_t rate = 0;
+    const uint8_t *data = nullptr;
+    size_t data_size = 0;
+    for (size_t pos = 12; pos + 8 <= file.size();) {
+        const uint8_t *chunk = file.data() + pos;
+        size_t size = std::min<size_t>(get32(chunk + 4), file.size() - pos - 8);
+        if (memcmp(chunk, "fmt ", 4) == 0 && size >= 16) {
+            format = get16(chunk + 8);
+            channels = get16(chunk + 10);
+            rate = get32(chunk + 12);
+            bits = get16(chunk + 22);
+            // extensible wavs keep the real format in the first two bytes of the sub format guid
+            if (format == 0xFFFE && size >= 40) format = get16(chunk + 32);
+        } else if (memcmp(chunk, "data", 4) == 0) {
+            data = chunk + 8;
+            data_size = size;
+        }
+        pos += 8 + size + (size & 1);
+    }
+    bool pcm = format == 1 && (bits == 16 || bits == 24), flt = format == 3 && bits == 32;
+    if (!data || channels < 1 || rate == 0 || !(pcm || flt))
+        return *err = path + " needs 16 or 24 bit pcm or 32 bit float", false;
+
+    int bytes = bits / 8;
+    size_t count = data_size / (bytes * channels);
+    auto sample = [&](size_t frame, int ch) {
+        const uint8_t *p = data + (frame * channels + std::min(ch, channels - 1)) * bytes;
+        if (flt) {
+            float x;
+            memcpy(&x, p, 4);
+            return x;
+        }
+        if (bits == 16) return (int16_t)get16(p) / 32768.0f;
+        return (int32_t)((uint32_t)p[0] << 8 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 24) / 2147483648.0f;
+    };
+    // linear resampling is fine because the frontend low passes at 7.2 khz
+    double step = (double)rate / capture_rate;
+    size_t out = rate == (uint32_t)capture_rate ? count : (size_t)(count / step);
+    frames->resize(out * capture_channels);
+    for (size_t i = 0; i < out; i++) {
+        double t = i * step;
+        size_t a = (size_t)t;
+        float frac = (float)(t - a);
+        size_t b = a + 1 < count ? a + 1 : a;
+        for (int ch = 0; ch < capture_channels; ch++) {
+            float x = sample(a, ch) * (1 - frac) + sample(b, ch) * frac;
+            (*frames)[i * capture_channels + ch] = (int16_t)lrintf(fmaxf(-1.0f, fminf(1.0f, x)) * 32767.0f);
+        }
+    }
+    return true;
 }

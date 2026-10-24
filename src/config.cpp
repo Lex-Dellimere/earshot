@@ -103,6 +103,20 @@ static void writeDefaults(const std::string &path) {
     fclose(f);
 }
 
+bool configApply(Config *cfg, const std::string &key, const std::string &value) {
+    for (const Field &field : fieldsOf(cfg)) {
+        if (key != field.key) continue;
+        switch (field.type) {
+        case FieldType::Text: *(std::string *)field.ptr = value; break;
+        case FieldType::Number: *(float *)field.ptr = (float)atof(value.c_str()); break;
+        case FieldType::Integer: *(int *)field.ptr = atoi(value.c_str()); break;
+        case FieldType::Flag: *(bool *)field.ptr = value == "true" || value == "yes" || value == "1" || value == "on"; break;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool configLoad(Config *cfg, const std::string &path, std::string *err) {
     FILE *f = fopen(path.c_str(), "r");
     if (!f) {
@@ -110,7 +124,6 @@ bool configLoad(Config *cfg, const std::string &path, std::string *err) {
         writeDefaults(path);
         return true;
     }
-    std::vector<Field> fields = fieldsOf(cfg);
     char line[4096];
     int number = 0;
     while (fgets(line, sizeof line, f)) {
@@ -120,19 +133,7 @@ bool configLoad(Config *cfg, const std::string &path, std::string *err) {
         size_t eq = s.find('=');
         std::string key = trim(s.substr(0, eq));
         std::string value = eq == std::string::npos ? "" : trim(s.substr(eq + 1));
-        const Field *field = nullptr;
-        for (const Field &candidate : fields)
-            if (key == candidate.key) field = &candidate;
-        if (!field) {
-            *err += "line " + std::to_string(number) + ": unknown key " + key + "\n";
-            continue;
-        }
-        switch (field->type) {
-        case FieldType::Text: *(std::string *)field->ptr = value; break;
-        case FieldType::Number: *(float *)field->ptr = (float)atof(value.c_str()); break;
-        case FieldType::Integer: *(int *)field->ptr = atoi(value.c_str()); break;
-        case FieldType::Flag: *(bool *)field->ptr = value == "true" || value == "yes" || value == "1" || value == "on"; break;
-        }
+        if (!configApply(cfg, key, value)) *err += "line " + std::to_string(number) + ": unknown key " + key + "\n";
     }
     fclose(f);
     return err->empty();

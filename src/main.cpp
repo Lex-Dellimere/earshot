@@ -11,6 +11,8 @@ static void usage() {
         "  -s, --source NAME    start on a source: system mic or part of an app or device name\n"
         "      --list           list sources and exit\n"
         "      --print          no tui and print the transcript to stdout\n"
+        "      --file WAV       transcribe a wav file and exit\n"
+        "      --set KEY=VALUE  override a config value for this run\n"
         "      --send CMD       tell a running earshot to clip replay play process clear or quit\n"
         "      --download NAME  fetch a whisper model like base.en small.en large-v3-turbo or silero\n",
         configPath().c_str());
@@ -94,8 +96,33 @@ static void dumpTranscript(Transcript *tr, double since, const std::string &wav)
     fclose(f);
 }
 
+// runs a wav through the live pipeline as fast as the model allows
+static int transcribeFile(const Config &cfg, const std::string &path) {
+    std::vector<int16_t> frames;
+    std::string err, note;
+    if (!wavRead(path, &frames, &err)) {
+        fprintf(stderr, "earshot: %s\n", err.c_str());
+        return 1;
+    }
+    size_t count = frames.size() / capture_channels;
+    Ring ring;
+    ringInit(&ring, (double)count / capture_rate + 1);
+    ringPush(&ring, frames.data(), count);
+    Transcript tr;
+    Transcriber *t = transcriberStart(&ring, &tr, cfg, &err, &note);
+    if (!t) {
+        fprintf(stderr, "earshot: %s\n", err.c_str());
+        return 1;
+    }
+    if (!note.empty()) fprintf(stderr, "earshot: %s\n", note.c_str());
+    transcriberDrain(t);
+    for (const Line &l : tr.raw) printf("%s\n", l.text.c_str());
+    return 0;
+}
+
 int main(int argc, char **argv) {
-    std::string config_path = configPath(), source_arg, send_arg, download_arg;
+    std::string config_path = configPath(), source_arg, send_arg, download_arg, file_arg;
+    std::vector<std::string> overrides;
     bool list = false, print = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
@@ -104,6 +131,8 @@ int main(int argc, char **argv) {
         else if ((a == "-s" || a == "--source") && more) source_arg = argv[++i];
         else if (a == "--send" && more) send_arg = argv[++i];
         else if (a == "--download" && more) download_arg = argv[++i];
+        else if (a == "--file" && more) file_arg = argv[++i];
+        else if (a == "--set" && more) overrides.push_back(argv[++i]);
         else if (a == "--list") list = true;
         else if (a == "--print") print = true;
         else {
@@ -121,9 +150,17 @@ int main(int argc, char **argv) {
     Config cfg;
     std::string err;
     if (!configLoad(&cfg, config_path, &err)) fprintf(stderr, "%s: %s", config_path.c_str(), err.c_str());
+    for (const std::string &o : overrides) {
+        size_t eq = o.find('=');
+        if (eq == std::string::npos || !configApply(&cfg, o.substr(0, eq), o.substr(eq + 1))) {
+            fprintf(stderr, "earshot: bad --set %s\n", o.c_str());
+            return 1;
+        }
+    }
     if (!source_arg.empty()) cfg.source = source_arg;
     cfg.out_dir = expandPath(cfg.out_dir);
     tuiSetColor(cfg.color);
+    if (!file_arg.empty()) return transcribeFile(cfg, file_arg);
 
     Ring ring;
     ringInit(&ring, std::max({ cfg.before, cfg.replay, cfg.playback }) + 30);

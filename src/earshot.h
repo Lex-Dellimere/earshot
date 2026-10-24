@@ -56,6 +56,7 @@ struct Config {
 
 std::string configPath();
 bool configLoad(Config *cfg, const std::string &path, std::string *err);
+bool configApply(Config *cfg, const std::string &key, const std::string &value);
 void configSet(const std::string &path, const char *key, const std::string &value);
 std::string expandPath(const std::string &path);
 std::string modelPath(const std::string &name);
@@ -88,6 +89,7 @@ struct Clip {
 bool clipBegin(Clip *clip, Ring *ring, const std::string &dir, double before, const std::string &tag);
 void clipPump(Clip *clip, Ring *ring);
 void clipEnd(Clip *clip);
+bool wavRead(const std::string &path, std::vector<int16_t> *frames, std::string *err);
 
 // dsp turns 48k stereo into filtered 16k mono
 
@@ -115,6 +117,7 @@ Transcriber *transcriberStart(Ring *ring, Transcript *tr, const Config &cfg, std
 void transcriberReset(Transcriber *t);
 bool transcriberBusy(Transcriber *t);
 void transcriberStop(Transcriber *t);
+void transcriberDrain(Transcriber *t);
 
 // llm
 
