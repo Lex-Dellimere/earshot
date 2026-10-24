@@ -215,15 +215,19 @@ int main(int argc, char **argv) {
         { keyCode(cfg.key_clip), "clip" }, { keyCode(cfg.key_replay), "replay" }, { keyCode(cfg.key_play), "play" },
         { keyCode(cfg.key_process), "process" }, { keyCode(cfg.key_clear), "clear" }, { keyCode(cfg.key_quit), "quit" },
     };
-    const std::vector<std::pair<std::string, std::string>> help = {
-        { cfg.key_quit, "quit" }, { "↑↓ Enter", "source" }, { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" },
-        { cfg.key_play, "play" }, { cfg.key_instruction, "instruction" }, { cfg.key_process, "process" },
-        { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
+    // most useful first because the footer shows only what fits
+    auto helpFor = [&](bool wide) -> std::vector<std::pair<std::string, std::string>> {
+        return {
+            { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_clip, "clip" },
+            { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_instruction, "instruction" },
+            { cfg.key_process, "process" }, { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
+        };
     };
 
     Clip clip;
     std::string message, edit;
     bool message_error = false, editing = false;
+    Overlay overlay = Overlay::None;
     double message_until = 0, llm_last = nowSeconds(), last_draw = 0;
     size_t llm_upto = 0, written_raw = 0, printed_raw = 0, printed_processed = 0;
     int selected = 0, scroll = 0;
@@ -369,16 +373,27 @@ int main(int argc, char **argv) {
                 }
                 continue;
             }
+            if (overlay == Overlay::Help) {
+                overlay = Overlay::None;
+                continue;
+            }
+            bool wide = tuiWide();
             if (key == 3) quit = true;
-            else if (key == KeyUp && selected > 0) selected--;
-            else if (key == KeyDown && selected + 1 < (int)sources.size()) selected++;
-            else if (key == KeyPageUp) scroll += 5;
+            else if (key == '?') overlay = Overlay::Help;
+            else if (key == KeyTab) overlay = overlay == Overlay::Sources ? Overlay::None : Overlay::Sources;
+            else if (key == KeyEsc) overlay = Overlay::None;
+            else if (key == KeyUp || key == KeyDown) {
+                if (key == KeyUp && selected > 0) selected--;
+                if (key == KeyDown && selected + 1 < (int)sources.size()) selected++;
+                if (!wide) overlay = Overlay::Sources;
+            } else if (key == KeyPageUp) scroll += 5;
             else if (key == KeyPageDown) scroll = scroll > 5 ? scroll - 5 : 0;
-            else if (key == KeyEnter && selected < (int)sources.size()) {
+            else if (key == KeyEnter && selected < (int)sources.size() && (wide || overlay == Overlay::Sources)) {
                 if (clip.file) command("clip");
                 src = sources[selected];
                 audioStart(audio, src);
                 transcriberReset(transcriber);
+                overlay = Overlay::None;
                 say("listening to " + src.label, false);
             } else if (key == keyCode(cfg.key_instruction)) {
                 editing = true;
@@ -417,7 +432,8 @@ int main(int argc, char **argv) {
             v.scroll = scroll;
             v.message = message;
             v.message_error = message_error;
-            v.help = help;
+            v.help = helpFor(tuiWide());
+            v.overlay = overlay;
             tuiDraw(v);
         }
         sleepMs(20);

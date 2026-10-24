@@ -62,11 +62,11 @@ void terminalInit() {
     t.c_cc[VMIN] = 0;
     t.c_cc[VTIME] = 0;
     tcsetattr(0, TCSAFLUSH, &t);
-    terminalWrite("\x1b[?1049h\x1b[?25l\x1b[2J");
+    terminalWrite("\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J");
 }
 
 void terminalRestore() {
-    terminalWrite("\x1b[0m\x1b[?25h\x1b[?1049l");
+    terminalWrite("\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l");
     tcsetattr(0, TCSAFLUSH, &saved_termios);
 }
 

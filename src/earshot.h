@@ -185,9 +185,11 @@ bool pollCommand(std::string *cmd);
 // tui
 
 enum Key {
-    KeyNone = -1, KeyEnter = 13, KeyEsc = 27, KeyBackspace = 127,
-    KeyUp = 1000, KeyDown, KeyLeft, KeyRight, KeyPageUp, KeyPageDown,
+    KeyNone = -1, KeyTab = 9, KeyEnter = 13, KeyEsc = 27, KeyBackspace = 127,
+    KeyUp = 1000, KeyDown, KeyLeft, KeyRight, KeyPageUp, KeyPageDown, KeyHome, KeyEnd, KeyDelete, KeyBackTab,
 };
+
+enum class Overlay { None, Sources, Help };
 
 struct View {
     const std::vector<Source> *sources;
@@ -208,10 +210,15 @@ struct View {
     std::string message;
     bool message_error;
     std::vector<std::pair<std::string, std::string>> help;
+    Overlay overlay;
 };
 
 void tuiSetColor(bool on);
 int tuiReadKey(std::string *text);
 int keyCode(const std::string &name);
 void tuiDraw(const View &v);
+bool tuiWide();
+int textWidth(const std::string &s);
+void wrapText(const std::string &text, int w, std::vector<std::string> *out);
+int meterCells(float peak);
 bool sameSource(const Source &a, const Source &b);

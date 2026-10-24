@@ -112,7 +112,37 @@ static void testWav() {
     remove(path.c_str());
 }
 
+static void testText() {
+    CHECK_EQ(textWidth("abc"), 3);
+    CHECK_EQ(textWidth("\x1b[1;31mab\x1b[0m"), 2);
+    CHECK_EQ(textWidth("↑↓ é"), 4);
+    CHECK_EQ(textWidth("日本語"), 6);
+    CHECK_EQ(textWidth("e\xcc\x81"), 1);  // e plus a combining accent
+    std::vector<std::string> lines;
+    wrapText("the quick brown fox jumps", 10, &lines);
+    CHECK_EQ(lines.size(), (size_t)3);
+    CHECK_EQ(lines[0], std::string("the quick"));
+    CHECK_EQ(lines[2], std::string("jumps"));
+    lines.clear();
+    wrapText("日本語のテキスト", 6, &lines);
+    CHECK_EQ(lines.size(), (size_t)3);
+    for (const std::string &l : lines) CHECK(textWidth(l) <= 6);
+    lines.clear();
+    wrapText("", 10, &lines);
+    CHECK_EQ(lines.size(), (size_t)1);
+}
+
+static void testMeter() {
+    CHECK_EQ(meterCells(0), 0);
+    CHECK_EQ(meterCells(1.0f), 10);
+    CHECK_EQ(meterCells(0.35f), 8);   // a loud voice
+    CHECK_EQ(meterCells(0.03f), 5);   // quiet speech still shows
+    CHECK_EQ(meterCells(2.0f), 10);
+}
+
 int main() {
+    testText();
+    testMeter();
     testRing();
     testConfig();
     testWav();
