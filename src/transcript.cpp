@@ -5,7 +5,7 @@
 
 constexpr double echo_window = 6;  // seconds either side where a line may be the other channel's echo
 
-static std::vector<std::string> plainWords(const std::string &s) {
+std::vector<std::string> plainWords(const std::string &s) {
     std::vector<std::string> words;
     std::string w;
     for (unsigned char c : s) {

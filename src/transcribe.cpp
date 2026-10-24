@@ -65,9 +65,42 @@ static bool isNoise(const std::string &text) {
     return false;
 }
 
-static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
-    Transcriber *t = w->t;
-    if (t->cfg.normalize) normalizeChunk(&pcm);
+// mean token probability a one or two word line needs; real short replies scored 0.5 to 0.7 in tests
+constexpr float short_min_p = 0.35f;
+
+// whisper makes up short filler like I or Oh from noise and is unsure when it does
+static bool unsure(whisper_context *ctx, int seg, const std::string &text) {
+    if (plainWords(text).size() > 2) return false;
+    whisper_token eot = whisper_token_eot(ctx);
+    float sum = 0;
+    int n = 0;
+    for (int j = 0; j < whisper_full_n_tokens(ctx, seg); j++) {
+        whisper_token_data d = whisper_full_get_token_data(ctx, seg, j);
+        if (d.id >= eot) continue;
+        sum += d.p;
+        n++;
+    }
+    return n == 0 || sum / n < short_min_p;
+}
+
+// over music after speech whisper tends to hand its prompt back instead of hearing anything new
+static bool echoesPrompt(const std::string &text, const std::string &prompt) {
+    std::vector<std::string> mine = plainWords(text), pool = plainWords(prompt);
+    if (mine.size() < 3) return false;
+    size_t found = 0;
+    for (const std::string &w : mine) {
+        for (std::string &p : pool) {
+            if (p == w) {
+                p.clear();
+                found++;
+                break;
+            }
+        }
+    }
+    return found * 5 >= mine.size() * 4;
+}
+
+static std::string decode(Transcriber *t, const std::vector<float> &pcm, const char *prompt) {
     bool beam = t->cfg.beam > 1;
     whisper_full_params p = whisper_full_default_params(beam ? WHISPER_SAMPLING_BEAM_SEARCH : WHISPER_SAMPLING_GREEDY);
     if (beam) p.beam_search.beam_size = t->cfg.beam;
@@ -77,24 +110,28 @@ static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
     p.no_timestamps = true;
     p.suppress_nst = true;
     p.print_progress = p.print_realtime = p.print_special = p.print_timestamps = false;
-    if (t->cfg.context && !w->last_text.empty()) p.initial_prompt = w->last_text.c_str();
-
-    t->busy++;
+    p.initial_prompt = prompt;
     std::string text;
-    {
-        std::lock_guard<std::mutex> lock(t->infer);
-        if (whisper_full(t->ctx, p, pcm.data(), (int)pcm.size()) == 0) {
-            for (int i = 0; i < whisper_full_n_segments(t->ctx); i++) {
-                if (whisper_full_get_segment_no_speech_prob(t->ctx, i) > 0.6f) continue;
-                std::string seg = whisper_full_get_segment_text(t->ctx, i);
-                if (!isNoise(seg)) text += seg;
-            }
-        }
+    std::lock_guard<std::mutex> lock(t->infer);
+    if (whisper_full(t->ctx, p, pcm.data(), (int)pcm.size()) != 0) return "";
+    for (int i = 0; i < whisper_full_n_segments(t->ctx); i++) {
+        if (whisper_full_get_segment_no_speech_prob(t->ctx, i) > 0.6f) continue;
+        std::string seg = whisper_full_get_segment_text(t->ctx, i);
+        if (!isNoise(seg) && !unsure(t->ctx, i, seg)) text += seg;
     }
-    t->busy--;
     size_t a = text.find_first_not_of(' ');
-    if (a == std::string::npos) return;
-    text = text.substr(a);
+    return a == std::string::npos ? "" : text.substr(a);
+}
+
+static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
+    Transcriber *t = w->t;
+    if (t->cfg.normalize) normalizeChunk(&pcm);
+    bool prompted = t->cfg.context && !w->last_text.empty();
+    t->busy++;
+    std::string text = decode(t, pcm, prompted ? w->last_text.c_str() : nullptr);
+    if (prompted && echoesPrompt(text, w->last_text)) text = decode(t, pcm, nullptr);
+    t->busy--;
+    if (text.empty()) return;
     w->last_text = text;
     transcriptAdd(t->tr, { start, text, w->channel, start + (double)pcm.size() / whisper_rate });
 }

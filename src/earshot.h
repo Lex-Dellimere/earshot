@@ -153,6 +153,7 @@ struct Transcript {
 };
 
 void transcriptAdd(Transcript *tr, Line line);
+std::vector<std::string> plainWords(const std::string &s);
 std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, double now, const bool *pending = nullptr);
 
 struct Transcriber;
