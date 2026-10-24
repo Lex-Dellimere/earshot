@@ -68,6 +68,29 @@ if(TARGET ggml-vulkan AND TARGET SPIRV-Headers::SPIRV-Headers)
     target_link_libraries(ggml-vulkan PRIVATE SPIRV-Headers::SPIRV-Headers)
 endif()
 
+# rnnoise suppresses noise around speech; the release tarball carries the trained model
+FetchContent_Declare(rnnoise
+    URL https://github.com/xiph/rnnoise/releases/download/v0.2/rnnoise-0.2.tar.gz
+    URL_HASH SHA256=90fce4b00b9ff24c08dbfe31b82ffd43bae383d85c5535676d28b0a2b11c0d37
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(rnnoise)
+add_library(rnnoise STATIC
+    ${rnnoise_SOURCE_DIR}/src/denoise.c
+    ${rnnoise_SOURCE_DIR}/src/rnn.c
+    ${rnnoise_SOURCE_DIR}/src/pitch.c
+    ${rnnoise_SOURCE_DIR}/src/kiss_fft.c
+    ${rnnoise_SOURCE_DIR}/src/celt_lpc.c
+    ${rnnoise_SOURCE_DIR}/src/nnet.c
+    ${rnnoise_SOURCE_DIR}/src/nnet_default.c
+    ${rnnoise_SOURCE_DIR}/src/parse_lpcnet_weights.c
+    ${rnnoise_SOURCE_DIR}/src/rnnoise_data.c
+    ${rnnoise_SOURCE_DIR}/src/rnnoise_tables.c)
+target_include_directories(rnnoise PUBLIC ${rnnoise_SOURCE_DIR}/include PRIVATE ${rnnoise_SOURCE_DIR}/src)
+target_compile_options(rnnoise PRIVATE -w)
+if(NOT WIN32)
+    target_link_libraries(rnnoise PRIVATE m)
+endif()
+
 # everything but main so the unit tests link the same code
 add_library(earshot_core OBJECT
     src/app.cpp
@@ -81,7 +104,7 @@ add_library(earshot_core OBJECT
     src/llm.cpp
     src/tui.cpp)
 target_compile_options(earshot_core PUBLIC -Wall -Wextra -Wno-missing-field-initializers -fno-exceptions -fno-rtti)
-target_link_libraries(earshot_core PUBLIC whisper)
+target_link_libraries(earshot_core PUBLIC whisper rnnoise)
 
 if(WIN32)
     target_sources(earshot_core PRIVATE src/windows/audio_wasapi.cpp src/windows/platform_windows.cpp)

@@ -36,6 +36,8 @@ struct Config {
     float chunk = 8;
     bool focus = false;
     float highpass = 100;
+    bool denoise = true;
+    bool limiter = false;
     bool normalize = true;
     int beam = 1;
     bool context = true;

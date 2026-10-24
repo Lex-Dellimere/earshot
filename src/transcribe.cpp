@@ -1,4 +1,5 @@
 #include "earshot.h"
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <thread>
@@ -149,7 +150,20 @@ static void worker(Worker *w) {
         if (w->channel == You) w->cfg.focus = false;
     };
     snapshot();
-    Frontend *fe = frontendCreate(w->cfg);
+    // whisper hears the audio as it is; denoising only feeds speech detection because tests showed
+    // denoised audio costs whisper accuracy while a cleaner signal helps decide when someone speaks
+    Frontend *fe = nullptr, *fe_vad = nullptr;
+    auto makeFrontends = [&] {
+        if (fe) frontendDestroy(fe);
+        if (fe_vad) frontendDestroy(fe_vad);
+        Config plain = w->cfg;
+        plain.denoise = false;
+        fe = frontendCreate(plain);
+        fe_vad = w->cfg.denoise ? frontendCreate(w->cfg) : nullptr;
+    };
+    makeFrontends();
+    std::vector<float> clean;
+    size_t clean_used = 0;
     // start from the oldest audio so speech captured while the model loaded is kept
     uint64_t cursor = 0;
     std::vector<float> fresh, pcm;
@@ -162,16 +176,18 @@ static void worker(Worker *w) {
     while (!t->stop) {
         if (w->reconfigure.exchange(false)) {
             snapshot();
-            frontendDestroy(fe);
-            fe = frontendCreate(w->cfg);
+            makeFrontends();
+            clean.clear();
+            clean_used = 0;
         }
         const size_t max_samples = (size_t)(w->cfg.chunk * whisper_rate);
         if (w->reset.exchange(false)) {
-            frontendDestroy(fe);
-            fe = frontendCreate(w->cfg);
+            makeFrontends();
             cursor = ringTotal(w->ring);
             fresh.clear();
             fresh_used = 0;
+            clean.clear();
+            clean_used = 0;
             pcm.clear();
             speaking = false;
             w->pending = false;
@@ -189,16 +205,21 @@ static void worker(Worker *w) {
         if (fresh.empty() || from != cursor) {
             fresh.clear();
             fresh_used = 0;
+            clean.clear();
+            clean_used = 0;
             fresh_time = nowSeconds() - (double)(total - from) / capture_rate;
         }
         cursor = from + n;
         frontendProcess(fe, frames.data(), n, &fresh);
+        if (fe_vad) frontendProcess(fe_vad, frames.data(), n, &clean);
 
         size_t windows = (fresh.size() - fresh_used) / vad_window;
+        if (fe_vad) windows = std::min(windows, (clean.size() - clean_used) / vad_window);
         if (windows == 0) continue;
+        const float *detect = fe_vad ? clean.data() + clean_used : fresh.data() + fresh_used;
         const float *probs = nullptr;
         if (t->mode == VadMode::Silero &&
-            whisper_vad_detect_speech_no_reset(w->vad, fresh.data() + fresh_used, (int)(windows * vad_window)) &&
+            whisper_vad_detect_speech_no_reset(w->vad, detect, (int)(windows * vad_window)) &&
             whisper_vad_n_probs(w->vad) >= (int)windows)
             probs = whisper_vad_probs(w->vad);
 
@@ -220,7 +241,8 @@ static void worker(Worker *w) {
                 voiced = probs[k] > w->cfg.vad_threshold;
             } else {
                 float e = 0;
-                for (int i = 0; i < vad_window; i++) e += win[i] * win[i];
+                const float *heard = detect + k * vad_window;
+                for (int i = 0; i < vad_window; i++) e += heard[i] * heard[i];
                 float rms = sqrtf(e / vad_window);
                 noise = rms < noise ? rms : noise * 0.995f + rms * 0.005f;
                 voiced = rms > fmaxf(0.004f, noise * 3.0f);
@@ -270,10 +292,18 @@ static void worker(Worker *w) {
             fresh_time += (double)fresh_used / whisper_rate;
             fresh_used = 0;
         }
+        if (fe_vad) {
+            clean_used += windows * vad_window;
+            if (clean_used > (size_t)whisper_rate) {
+                clean.erase(clean.begin(), clean.begin() + clean_used);
+                clean_used = 0;
+            }
+        }
     }
     // finish the utterance in progress so quitting does not drop it
     if ((speaking || t->mode == VadMode::Off) && pcm.size() >= (size_t)whisper_rate / 2) runWhisper(w, pcm, start);
     frontendDestroy(fe);
+    if (fe_vad) frontendDestroy(fe_vad);
 }
 
 static whisper_context *loadModel(const Config &cfg, const std::string &model, std::string *err) {
@@ -309,6 +339,8 @@ Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const 
         vp.n_threads = 1;
         vp.use_gpu = false;
         w->vad = whisper_vad_init_from_file_with_params(modelPath("silero-v5.1.2").c_str(), vp);
+        // the lstm state starts as uninitialised memory and only the resetting detect call clears it
+        if (w->vad) whisper_vad_reset_state(w->vad);
         if (!w->vad) {
             t->mode = VadMode::Energy;
             *note = "silero vad model missing so using energy vad (earshot --download silero)";

@@ -1,17 +1,24 @@
 // audio frontend for whisper
-// 48k stereo goes through an anti alias fir down to 16k then an optional
-// centre extraction that keeps sound common to both channels then a highpass
-// and a slow gain control so quiet sources reach the vad at a usable level
+// 48k stereo optionally goes through rnnoise (used only for speech detection),
+// then an anti alias fir down to 16k, an optional centre extraction that keeps
+// sound common to both channels, a highpass, a limiter that flattens bangs far
+// above the running level and a slow gain control so quiet sources reach the
+// vad at a usable level
 #include "earshot.h"
 #include <cmath>
+#include <rnnoise.h>
 
 constexpr int fir_taps = 63;
 constexpr int fft_size = 512;
 constexpr int fft_hop = fft_size / 2;
 constexpr float pi = 3.14159265358979f;
 
+constexpr int rnn_frame = 480;  // rnnoise works on 10 ms at 48 khz
+
 struct Frontend {
     bool focus;
+    DenoiseState *rnn = nullptr;
+    std::vector<float> rnn_in;
     float fir[fir_taps];
     std::vector<float> in_l, in_r;
 
@@ -22,6 +29,11 @@ struct Frontend {
     bool highpass;
     float b0, b1, b2, a1, a2;
     float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+
+    bool limit;
+    float fast = 0;          // peak follower with instant attack
+    float slow = 1e-4f;      // running power of the limited signal
+    float fast_release, slow_rise, slow_fall;
 
     bool agc;
     float envelope = 0.01f;
@@ -61,10 +73,16 @@ Frontend *frontendCreate(const Config &cfg) {
 
     fe->agc = cfg.normalize;
     fe->release = expf(-1.0f / (2.0f * whisper_rate));
+    fe->limit = cfg.limiter;
+    fe->fast_release = expf(-1.0f / (0.06f * whisper_rate));
+    fe->slow_rise = expf(-1.0f / (0.3f * whisper_rate));
+    fe->slow_fall = expf(-1.0f / (3.0f * whisper_rate));
+    if (cfg.denoise) fe->rnn = rnnoise_create(nullptr);
     return fe;
 }
 
 void frontendDestroy(Frontend *fe) {
+    if (fe->rnn) rnnoise_destroy(fe->rnn);
     delete fe;
 }
 
@@ -130,8 +148,22 @@ static void focusFrame(Frontend *fe, std::vector<float> *out) {
 
 void frontendProcess(Frontend *fe, const int16_t *frames, size_t count, std::vector<float> *out) {
     for (size_t i = 0; i < count; i++) {
-        fe->in_l.push_back(frames[i * 2] / 32768.0f);
-        fe->in_r.push_back(frames[i * 2 + 1] / 32768.0f);
+        float l = frames[i * 2] / 32768.0f, r = frames[i * 2 + 1] / 32768.0f;
+        if (!fe->rnn) {
+            fe->in_l.push_back(l);
+            fe->in_r.push_back(r);
+            continue;
+        }
+        // rnnoise is mono and wants samples on the 16 bit scale
+        fe->rnn_in.push_back((l + r) * 0.5f * 32768.0f);
+        if (fe->rnn_in.size() < (size_t)rnn_frame) continue;
+        float out[rnn_frame];
+        rnnoise_process_frame(fe->rnn, out, fe->rnn_in.data());
+        fe->rnn_in.clear();
+        for (float x : out) {
+            fe->in_l.push_back(x / 32768.0f);
+            fe->in_r.push_back(x / 32768.0f);
+        }
     }
     size_t start = out->size();
     size_t pos = 0;
@@ -161,6 +193,16 @@ void frontendProcess(Frontend *fe, const int16_t *frames, size_t count, std::vec
             fe->y2 = fe->y1;
             fe->y1 = y;
             x = y;
+        }
+        if (fe->limit) {
+            // anything more than 12 db over the running level is pulled down to it, so a bang or shout
+            // cannot swamp the vad and the gain control the way a loud sound otherwise would
+            float a = fabsf(x);
+            fe->fast = a > fe->fast ? a : fe->fast * fe->fast_release;
+            float ceiling = fmaxf(4.0f * sqrtf(fe->slow), 0.02f);
+            if (fe->fast > ceiling) x *= ceiling / fe->fast;
+            float k = x * x > fe->slow ? fe->slow_rise : fe->slow_fall;
+            fe->slow = fe->slow * k + x * x * (1 - k);
         }
         if (fe->agc) {
             // peak follower with a two second release and at most 26 db of boost

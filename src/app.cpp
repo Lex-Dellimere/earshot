@@ -641,7 +641,7 @@ void App::applySetting(const Setting &s, const std::string &before) {
         Source them;
         transcript_path = expandPath(cfg.transcript_dir) + "/" + session + "_" + fileTag(active(Them, &them) ? them.label : "earshot") + ".txt";
     } else if (key == "language" || key == "beam" || key == "vad_threshold" || key == "context" || key == "focus" ||
-               key == "highpass" || key == "normalize" || key == "threads" || key == "chunk" || key == "live" || key == "live_every") {
+               key == "highpass" || key == "normalize" || key == "denoise" || key == "limiter" || key == "threads" || key == "chunk" || key == "live" || key == "live_every") {
         transcriberConfigure(transcriber, cfg);
     }
     say(s.restart ? "saved, applies the next time earshot starts" : "saved", false);

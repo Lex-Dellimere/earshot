@@ -19,6 +19,8 @@ static const std::vector<Setting> list = {
     { "live", "Live text", "Show a grey guess of the sentence while it is spoken. Costs extra work; turn off if whisper falls behind.", Setting::Toggle },
     { "live_every", "Live update (s)", "Seconds between live guesses.", Setting::Number, 0.5f, 0.5f, 5 },
     { "context", "Carry context", "Give whisper the previous line so sentences continue.", Setting::Toggle },
+    { "denoise", "Noise suppression", "Cleans the audio with RNNoise to decide when someone speaks, which helps with crowds and fans. Whisper still hears the original, because denoised audio made it less accurate in tests.", Setting::Toggle },
+    { "limiter", "Flatten loud bangs", "Pulls sounds far louder than the speech around them down. Helped the small models a little and the larger ones not at all in tests.", Setting::Toggle },
     { "focus", "Focus on the centre", "Keeps sound panned to the middle. Helps against wide crowd noise, hurts when music has a centred lead vocal.", Setting::Toggle },
     { "highpass", "Cut bass below (Hz)", "Removes rumble and bass. 0 turns it off.", Setting::Number, 25, 0, 400 },
     { "normalize", "Level quiet speech", "Brings quiet sources up to a steady level before whisper.", Setting::Toggle },

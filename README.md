@@ -174,6 +174,8 @@ earshot --download large-v3-turbo-q5_0
 
 These run between capture and whisper:
 
+1. **Noise suppression for detection** (`denoise`, on). RNNoise cleans a copy of the audio that only the speech detector sees. Feeding denoised audio to whisper itself doubled its word errors in tests (whisper is trained on noisy audio and trips over denoiser artefacts), but using it to decide when someone speaks lowered errors a little, most on crowds (45 % to 18 % on the crowd clip).
+1. **Limiter** (`limiter`, off). Pulls bangs and shouts far above the running level down. Results were mixed, so it is opt-in.
 1. **Anti-alias resampling.** A 63-tap windowed-sinc FIR takes 48 kHz down to 16 kHz without aliasing hiss.
 2. **Centre focus** (`focus`, off by default). An STFT mask keeps sound that is the same in both channels. It helps when the noise is wide, like a crowd, but music with a centred lead vocal gets through it and it costs accuracy there.
 3. **Highpass** (`highpass = 100`). Removes bass and rumble.

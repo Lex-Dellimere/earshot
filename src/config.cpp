@@ -33,6 +33,8 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     NUMBER(chunk, "longest audio chunk in seconds sent to whisper"),
     FLAG(focus, "keep sound panned to the centre; helps against wide crowds, hurts when music has a centred lead vocal"),
     NUMBER(highpass, "cut rumble and bass below this many hz or 0 to disable"),
+    FLAG(denoise, "clean the audio with rnnoise before deciding when someone speaks; whisper still hears the original"),
+    FLAG(limiter, "flatten bangs and shouts far louder than the speech around them; mixed results in tests"),
     FLAG(normalize, "bring quiet speech up to a steady level before whisper"),
     INTEGER(beam, "beam search width where 1 is fastest"),
     FLAG(context, "give whisper the previous line so sentences carry over"),
