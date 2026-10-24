@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <direct.h>
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <thread>
@@ -21,6 +22,43 @@ std::string tempDir() { return env("TEMP", homeDir()); }
 void makeDirs(const std::string &path) {
     for (size_t i = 1; i <= path.size(); i++)
         if (i == path.size() || path[i] == '/' || path[i] == '\\') _mkdir(path.substr(0, i).c_str());
+}
+
+static std::wstring wide(const std::string &s) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n - 1 : 0, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n);
+    return w;
+}
+
+static std::string narrow(const wchar_t *w) {
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    std::string s(n > 0 ? n - 1 : 0, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+bool fileInfo(const std::string &path, DirEntry *out) {
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(wide(path).c_str(), GetFileExInfoStandard, &data)) return false;
+    *out = { path.substr(path.find_last_of("/\\") + 1), ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow,
+             (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 };
+    return true;
+}
+
+std::vector<DirEntry> listDir(const std::string &path) {
+    std::vector<DirEntry> out;
+    WIN32_FIND_DATAW data;
+    HANDLE h = FindFirstFileW(wide(path + "\\*").c_str(), &data);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (data.cFileName[0] == L'.') continue;
+        out.push_back({ narrow(data.cFileName), ((uint64_t)data.nFileSizeHigh << 32) | data.nFileSizeLow,
+                        (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 });
+    } while (FindNextFileW(h, &data));
+    FindClose(h);
+    std::sort(out.begin(), out.end(), [](const DirEntry &a, const DirEntry &b) { return a.name < b.name; });
+    return out;
 }
 
 bool writePrivateFile(const std::string &path, const std::string &data) {
@@ -212,10 +250,7 @@ bool pollCommand(std::string *cmd) {
 }
 
 void openPath(const std::string &path) {
-    int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-    std::wstring w(n > 0 ? n : 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), n);
-    ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    ShellExecuteW(nullptr, L"open", wide(path).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 static std::atomic<bool> *quit_flag;

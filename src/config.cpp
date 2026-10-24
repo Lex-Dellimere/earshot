@@ -22,7 +22,8 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(mic, "your voice: mic for the default input, part of a device name, or empty for off"),
     TEXT(them_label, "names shown before each channel's lines when both are on"),
     TEXT(you_label, nullptr),
-    TEXT(model, "whisper model name in the data dir or a full path to a ggml file"),
+    TEXT(model, "whisper model name in the data dir or a full path to a ggml file; the w key switches while running"),
+    TEXT(model_paths, "more whisper models for the w key: files or folders separated by ;"),
     TEXT(language, "spoken language code or auto for multilingual models"),
     INTEGER(threads, nullptr),
     FLAG(gpu, "use the gpu when built with cuda or vulkan"),
@@ -65,6 +66,7 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(key_play, nullptr),
     TEXT(key_instruction, nullptr),
     TEXT(key_ai, nullptr),
+    TEXT(key_model, nullptr),
     TEXT(key_process, nullptr),
     TEXT(key_clear, nullptr),
     TEXT(key_timestamps, nullptr),
@@ -79,6 +81,13 @@ static std::vector<Field> fieldsOf(Config *cfg) {
         for (int i = 0; i < 9; i++)
             if (f.ptr == &cfg->ai_slots[i]) f.key = slot_keys[i];
     return fields;
+}
+
+static std::string trim(const std::string &s) {
+    size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    size_t b = s.find_last_not_of(" \t\r\n");
+    return s.substr(a, b - a + 1);
 }
 
 std::string configPath() {
@@ -101,12 +110,46 @@ std::string modelPath(const std::string &name) {
     return dataDir() + "/ggml-" + name + ".bin";
 }
 
-static std::string trim(const std::string &s) {
-    size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos) return "";
-    size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+static bool endsWith(const std::string &s, const char *tail) {
+    size_t n = strlen(tail);
+    return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
 }
+
+// whisper models in the data dir by name and in model_paths by full path
+std::vector<ModelChoice> modelChoices(const Config &cfg) {
+    std::vector<ModelChoice> out;
+    auto add = [&](const std::string &value, const std::string &label, uint64_t size) {
+        for (const ModelChoice &c : out)
+            if (modelPath(c.value) == modelPath(value)) return;
+        out.push_back({ value, label, size });
+    };
+    for (const DirEntry &e : listDir(dataDir())) {
+        if (e.dir || e.name.compare(0, 5, "ggml-") != 0 || !endsWith(e.name, ".bin") || e.name.find("silero") != std::string::npos) continue;
+        std::string name = e.name.substr(5, e.name.size() - 9);
+        add(name, name, e.size);
+    }
+    std::string list = cfg.model_paths;
+    for (size_t start = 0; start <= list.size();) {
+        size_t semi = list.find(';', start);
+        std::string item = trim(list.substr(start, semi == std::string::npos ? std::string::npos : semi - start));
+        start = semi == std::string::npos ? list.size() + 1 : semi + 1;
+        if (item.empty()) continue;
+        std::string path = expandPath(item);
+        DirEntry info;
+        if (!fileInfo(path, &info)) continue;
+        if (!info.dir) {
+            add(path, path.substr(path.find_last_of("/\\") + 1), info.size);
+            continue;
+        }
+        for (const DirEntry &e : listDir(path))
+            if (!e.dir && endsWith(e.name, ".bin") && e.name.find("silero") == std::string::npos) add(path + "/" + e.name, e.name, e.size);
+    }
+    // the configured model is always offered even when it lives somewhere else
+    DirEntry info;
+    if (fileInfo(modelPath(cfg.model), &info)) add(cfg.model, cfg.model.substr(cfg.model.find_last_of("/\\") + 1), info.size);
+    return out;
+}
+
 
 static std::string fieldValue(const Field &f) {
     char buf[32];

@@ -26,6 +26,7 @@ struct Config {
     std::string them_label = "Them";
     std::string you_label = "You";
     std::string model = "base.en";
+    std::string model_paths;
     std::string language = "en";
     int threads = 8;
     bool gpu = true;
@@ -60,6 +61,7 @@ struct Config {
     std::string key_play = "space";
     std::string key_instruction = "i";
     std::string key_ai = "a";
+    std::string key_model = "w";
     std::string key_process = "p";
     std::string key_clear = "x";
     std::string key_timestamps = "t";
@@ -78,6 +80,14 @@ bool configSave(const Config &cfg, const std::string &path);
 std::string expandPath(const std::string &path);
 std::string shortPath(const std::string &path);
 std::string modelPath(const std::string &name);
+
+struct ModelChoice {
+    std::string value;  // what goes in the model setting: a name from the data dir or a full path
+    std::string label;
+    uint64_t size;
+};
+
+std::vector<ModelChoice> modelChoices(const Config &cfg);
 
 // ring buffer of interleaved stereo frames addressed by absolute index
 
@@ -150,6 +160,9 @@ Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const 
 void transcriberReset(Transcriber *t, int channel);
 bool transcriberBusy(Transcriber *t);
 bool transcriberPending(Transcriber *t, int channel);
+bool transcriberSetModel(Transcriber *t, const std::string &model);
+enum class ModelLoad { Ready, Loading, Failed };
+ModelLoad transcriberModelState(Transcriber *t, std::string *error);
 void transcriberStop(Transcriber *t);
 void transcriberDrain(Transcriber *t);
 
@@ -206,6 +219,15 @@ std::string configDir();
 std::string dataDir();
 std::string tempDir();
 void makeDirs(const std::string &path);
+
+struct DirEntry {
+    std::string name;
+    uint64_t size;
+    bool dir;
+};
+
+std::vector<DirEntry> listDir(const std::string &path);
+bool fileInfo(const std::string &path, DirEntry *out);
 bool writePrivateFile(const std::string &path, const std::string &data);
 bool replaceFile(const std::string &from, const std::string &to);
 void sleepMs(int ms);
@@ -268,6 +290,7 @@ struct View {
     Overlay overlay;
     bool timestamps;
     bool labels;
+    bool model_loading;
     std::string transcript_path;
 };
 

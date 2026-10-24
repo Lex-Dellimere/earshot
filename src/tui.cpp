@@ -251,7 +251,7 @@ static void drawTitle(const View &v, int w) {
         segs.push_back({ std::string(paint(clip_badge)) + " ● CLIP " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
     if (v.playback_left > 0)
         segs.push_back({ std::string(paint(play_badge)) + " ▶ " + minutes(v.playback_left) + " " + paint(reset) + paint(bar_bg) + paint(white), -1 });
-    segs.push_back({ "whisper " + v.model + (v.whisper_busy ? std::string(paint(yellow)) + " ●" + paint(white) : "  "), 4 });
+    segs.push_back({ "whisper " + std::string(v.model_loading ? std::string(paint(yellow)) + "loading " + paint(white) : "") + v.model + (v.whisper_busy ? std::string(paint(yellow)) + " ●" + paint(white) : "  "), 4 });
     std::string ai = "ai " + (v.ai.empty() ? "" : v.ai + " ");
     switch (v.llm) {
     case LlmState::Off: ai += std::string(paint(gray)) + "off"; break;

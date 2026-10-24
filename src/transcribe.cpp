@@ -34,6 +34,12 @@ struct Transcriber {
     Worker workers[channel_count];
     std::atomic<bool> stop{ false }, drain{ false };
     std::atomic<int> busy{ 0 };
+
+    // a new model loads beside the old one so transcription never pauses
+    std::thread loader;
+    std::atomic<ModelLoad> load{ ModelLoad::Ready };
+    std::mutex load_mu;
+    std::string load_error;
 };
 
 static void quietLog(enum ggml_log_level, const char *, void *) {}
@@ -204,17 +210,23 @@ static void worker(Worker *w) {
     frontendDestroy(fe);
 }
 
-Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note) {
-    whisper_log_set(quietLog, nullptr);
+static whisper_context *loadModel(const Config &cfg, const std::string &model, std::string *err) {
     whisper_context_params cp = whisper_context_default_params();
     cp.use_gpu = cfg.gpu;
     cp.gpu_device = cfg.gpu_device;
-    std::string path = modelPath(cfg.model);
+    std::string path = modelPath(model);
     whisper_context *ctx = whisper_init_from_file_with_params(path.c_str(), cp);
     if (!ctx) {
-        *err = "cannot load whisper model " + path + "\nget one with: earshot --download " + cfg.model;
-        return nullptr;
+        bool named = model.find('/') == std::string::npos && model.find('\\') == std::string::npos;
+        *err = "cannot load whisper model " + path + (named ? "\nget one with: earshot --download " + model : "");
     }
+    return ctx;
+}
+
+Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note) {
+    whisper_log_set(quietLog, nullptr);
+    whisper_context *ctx = loadModel(cfg, cfg.model, err);
+    if (!ctx) return nullptr;
     Transcriber *t = new Transcriber();
     t->tr = tr;
     t->cfg = cfg;
@@ -252,7 +264,45 @@ bool transcriberPending(Transcriber *t, int channel) {
     return t->workers[channel].pending;
 }
 
+// loads model on a thread and swaps it in between chunks, keeping the old one if it fails
+bool transcriberSetModel(Transcriber *t, const std::string &model) {
+    if (t->load == ModelLoad::Loading) return false;
+    if (t->loader.joinable()) t->loader.join();
+    t->load = ModelLoad::Loading;
+    t->loader = std::thread([t, model] {
+        std::string err;
+        whisper_context *ctx = loadModel(t->cfg, model, &err);
+        if (!ctx) {
+            std::lock_guard<std::mutex> lock(t->load_mu);
+            t->load_error = err;
+            t->load = ModelLoad::Failed;
+            return;
+        }
+        whisper_context *old;
+        {
+            std::lock_guard<std::mutex> lock(t->infer);
+            old = t->ctx;
+            t->ctx = ctx;
+        }
+        whisper_free(old);
+        t->load = ModelLoad::Ready;
+    });
+    return true;
+}
+
+// a failure is reported once and then reads as ready again with the old model
+ModelLoad transcriberModelState(Transcriber *t, std::string *error) {
+    ModelLoad state = t->load;
+    if (state == ModelLoad::Failed) {
+        std::lock_guard<std::mutex> lock(t->load_mu);
+        *error = t->load_error;
+        t->load = ModelLoad::Ready;
+    }
+    return state;
+}
+
 static void finish(Transcriber *t) {
+    if (t->loader.joinable()) t->loader.join();
     for (Worker &w : t->workers) {
         w.thread.join();
         if (w.vad) whisper_vad_free(w.vad);

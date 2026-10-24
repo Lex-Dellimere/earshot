@@ -1,10 +1,12 @@
 #include "../earshot.h"
 #include <X11/Xlib.h>
+#include <algorithm>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -30,6 +32,27 @@ std::string tempDir() { return env("XDG_RUNTIME_DIR", "/tmp"); }
 void makeDirs(const std::string &path) {
     for (size_t i = 1; i <= path.size(); i++)
         if (i == path.size() || path[i] == '/') mkdir(path.substr(0, i).c_str(), 0755);
+}
+
+bool fileInfo(const std::string &path, DirEntry *out) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return false;
+    *out = { path.substr(path.find_last_of('/') + 1), (uint64_t)st.st_size, S_ISDIR(st.st_mode) };
+    return true;
+}
+
+std::vector<DirEntry> listDir(const std::string &path) {
+    std::vector<DirEntry> out;
+    DIR *d = opendir(path.c_str());
+    if (!d) return out;
+    while (dirent *e = readdir(d)) {
+        if (e->d_name[0] == '.') continue;
+        DirEntry info;
+        if (fileInfo(path + "/" + e->d_name, &info)) out.push_back(info);
+    }
+    closedir(d);
+    std::sort(out.begin(), out.end(), [](const DirEntry &a, const DirEntry &b) { return a.name < b.name; });
+    return out;
 }
 
 bool writePrivateFile(const std::string &path, const std::string &data) {

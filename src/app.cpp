@@ -297,6 +297,18 @@ void App::command(const std::string &cmd) {
         if (cfg.instruction.empty()) say("set an instruction first", true);
         else if (!aiOn()) say("the ai is off: press " + cfg.key_ai + " to pick a model", true);
         else runLlm(true);
+    } else if (cmd == "model") {
+        // steps through the whisper models found in the data dir and model_paths
+        std::vector<ModelChoice> choices = modelChoices(cfg);
+        if (choices.empty()) return say("no whisper models found in " + shortPath(dataDir()), true);
+        size_t next = 0;
+        for (size_t i = 0; i < choices.size(); i++)
+            if (modelPath(choices[i].value) == modelPath(cfg.model)) next = (i + 1) % choices.size();
+        if (!transcriberSetModel(transcriber, choices[next].value)) return say("still loading the last model", true);
+        cfg.model = choices[next].value;
+        configSet(config_path, "model", cfg.model);
+        model_name = choices[next].label;
+        say("loading whisper " + model_name, false);
     } else if (cmd == "ai") {
         // steps through the filled slots and then off
         int next = cfg.ai;
@@ -425,7 +437,7 @@ void App::flushAll() {
 std::vector<std::pair<std::string, std::string>> App::help(bool wide) {
     return {
         { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_clip, "clip" },
-        { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_ai, "ai model" }, { cfg.key_instruction, "instruction" },
+        { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_ai, "ai model" }, { cfg.key_model, "whisper model" }, { cfg.key_instruction, "instruction" },
         { cfg.key_process, "process" }, { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" },
         { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
     };
@@ -476,7 +488,7 @@ void App::key(int key, const std::string &text) {
         const std::pair<std::string, const char *> keys[] = {
             { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" }, { cfg.key_play, "play" },
             { cfg.key_process, "process" }, { cfg.key_clear, "clear" }, { cfg.key_quit, "quit" },
-            { cfg.key_timestamps, "timestamps" }, { cfg.key_folder, "folder" }, { cfg.key_ai, "ai" },
+            { cfg.key_timestamps, "timestamps" }, { cfg.key_folder, "folder" }, { cfg.key_ai, "ai" }, { cfg.key_model, "model" },
         };
         for (const auto &[name, cmd] : keys)
             if (key == keyCode(name)) command(cmd);
@@ -508,6 +520,10 @@ void App::draw() {
         ? (double)std::max(clips[Them].frames, clips[You].frames) / capture_rate + 0.001 : 0;
     v.playback_left = playbackRemaining(audio);
     v.whisper_busy = transcriberBusy(transcriber);
+    std::string load_error;
+    ModelLoad load = transcriberModelState(transcriber, &load_error);
+    v.model_loading = load == ModelLoad::Loading;
+    if (load == ModelLoad::Failed) say(load_error, true);
     v.model = model_name;
     v.instruction = cfg.instruction;
     v.editing = editing;
