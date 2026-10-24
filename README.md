@@ -1,68 +1,132 @@
 # earshot
 
-Listen to one audio source on Linux (all system output, the mic, a single app like
-Spotify or Brave, or a specific device), transcribe it live with whisper.cpp,
-optionally rewrite the transcript with an instruction ("remove repeats and
-summarise"), and clip the last N seconds the moment something funny happens,
-like OBS's replay buffer.
+Listen to one audio source (all system output, the mic, one app like Spotify or
+Brave, or a specific device), transcribe it live with whisper.cpp, optionally
+rewrite the transcript with an AI instruction such as "remove repeats and
+summarise", and clip the last N seconds when something happens, like OBS's
+replay buffer.
 
-C-style C++ built with g++ and CMake. Runtime deps: PipeWire, libstdc++, libgomp, and
-the `curl` binary (only for the LLM step). whisper.cpp is vendored and linked
-statically. The stripped binary is about 2.5 MB.
+It runs on Linux (PipeWire, X11 or Wayland) and Windows 10/11 (WASAPI). It's
+written in C-style C++ and built with g++ and CMake. whisper.cpp is vendored
+and linked statically.
+
+| | Linux | Windows |
+|---|---|---|
+| binary | ~2.0 MB, links PipeWire + libstdc++ | ~3.9 MB static exe, system DLLs only |
+| per-app capture | PipeWire stream target | WASAPI process loopback (Win10 build 20348+) |
+| global hotkeys | X11 grab; Wayland via `earshot --send` | `RegisterHotKey` |
+| control | FIFO in `$XDG_RUNTIME_DIR` | named pipe |
 
 ## Build
 
 ```sh
-cmake -B build && cmake --build build -j
-./download-model.sh base.en        # or tiny.en / small.en / large-v3-turbo
+cmake -B build && cmake --build build -j       # linux
+cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake && cmake --build build-win -j   # windows exe
+./build/earshot --download base.en             # plus: --download silero (speech detector)
 ./build/earshot
 ```
 
-GPU: `cmake -B build -DEARSHOT_CUDA=ON` (needs `nvidia-cuda-toolkit`) or
-`-DEARSHOT_VULKAN=ON` (needs `glslc`). CPU is fine for `base.en`/`small.en`.
+On Windows itself, build with MSYS2 MinGW g++ and the same CMake commands.
+
+CMake options (all `-D…=ON/OFF`):
+
+- `EARSHOT_STRIP` (on): strips symbols after linking.
+- `EARSHOT_LTO` (on for Linux, off for Windows): link-time optimisation.
+- `EARSHOT_NATIVE` (on for Linux, off for Windows): `-march=native`. Turn it off for a binary you'll copy to other machines.
+- `EARSHOT_CUDA` / `EARSHOT_VULKAN`: run whisper on the GPU. CUDA needs `nvcc`; Vulkan needs `glslc`.
+
+MinGW GCC 14 hits an internal compiler error in ggml's SIMD code under LTO or
+AVX-512, so Windows builds default to an AVX2 baseline without LTO.
 
 ## Use
 
-```
-earshot                         # TUI, listening to all system output
-earshot -s spotify              # one app
-earshot --list                  # see sources
-earshot --print -s brave        # no TUI, transcript on stdout
+```sh
+earshot                    # tui on all system output
+earshot -s spotify         # one app
+earshot --list             # sources
+earshot --print -s brave   # no tui, transcript on stdout
+earshot --send play        # drive a running earshot: clip replay play process clear quit
 ```
 
-| key | |
-|---|---|
-| ↑↓ / Enter | pick source |
-| c | start a clip that begins `-b` seconds ago (default 10); press again to stop |
-| r | save the last `-r` seconds right now (default 30) |
-| i | edit the instruction (saved to `~/.config/earshot/instruction.txt`) |
-| p | run the instruction now instead of waiting `-e` seconds |
-| x | clear · PgUp/PgDn scroll · q quit |
+Default keys (all configurable):
 
-Clips go to `~/Music/earshot/` as 48 kHz stereo WAV with a `.txt` transcript of
-the same window. Two signals do the same without focusing the terminal, so you
-can bind them to global hotkeys in your desktop:
+| tui key | global hotkey | |
+|---|---|---|
+| `c` | ctrl+alt+c | start a clip that begins `before` seconds ago; press again to stop |
+| `r` | ctrl+alt+r | save the last `replay` seconds right now |
+| `space` | ctrl+alt+p | play back the last `playback` seconds; press again to stop |
+| `i` | | edit the AI instruction (saved to the config) |
+| `p` | | run the instruction now |
+| `x` / `q` | | clear / quit |
+
+**Wayland:** bind keys in your compositor to `earshot --send clip|replay|play`:
+
+- GNOME: Settings → Keyboard → Custom Shortcuts
+- KDE: System Settings → Shortcuts → Custom
+- Hyprland: `bind = CTRL ALT, R, exec, earshot --send replay`
+- Sway: `bindsym Ctrl+Alt+r exec earshot --send replay`
+
+**Output** goes to `out_dir` (default `~/Music/earshot`):
+
+- clips and replays as 48 kHz stereo WAV, each with a `.txt` transcript of the same window
+- the session transcript in `transcripts/<date>.txt`
+- AI output in `transcripts/<date>-processed.txt`
+
+## Config
+
+The config is written with comments on first run, at
+`~/.config/earshot/earshot.conf` on Linux and `%APPDATA%\earshot\earshot.conf`
+on Windows. Pass `-c` to use another file. Every option is in that file:
+model, language, VAD, filters, clip lengths, AI endpoint, keys and hotkeys.
+
+## Hard audio: music, noise, quiet sources
+
+These run between capture and whisper:
+
+1. **Anti-alias resampling.** A 63-tap windowed-sinc FIR takes 48 kHz down to 16 kHz without aliasing hiss.
+2. **Centre focus** (`focus`). An STFT mask keeps sound that is the same in both channels. Voices are usually mixed to the centre and instruments panned, so this works as a cheap vocal isolation. It has no effect on mono audio.
+3. **Highpass** (`highpass = 100`). Removes bass and rumble.
+4. **Gain control and normalisation** (`normalize`). A slow AGC lifts quiet sources before speech detection, and each chunk is peak-normalised before whisper.
+5. **Silero VAD** (`vad = silero`). A neural speech detector that ignores music between words, unlike an energy gate. Use `vad = off` to transcribe everything, e.g. lyrics.
+6. **Context** (`context`). The previous line is passed as whisper's prompt so sentences carry across chunks.
+
+Results on a test clip of speech under loud panned chords, bass and hi-hats at
+about 0 dB SNR:
+
+- before: "And so am I, fellow Americans! AS NOT! Watch your country can do it!"
+- now: "and so my fellow Americans ask not what your country can do for you…"
+
+Speech at −30 dB went from no output to word-perfect.
+
+For more accuracy use a bigger model: `--download small.en-q5_1`, then set
+`model = small.en-q5_1`. True stem separation (Demucs/UVR) needs a separate
+neural model and runtime, which is out of scope for a small dependency-free
+binary.
+
+## AI step
+
+Any OpenAI-compatible `/chat/completions` endpoint works. The default is local
+Ollama with `gemma3:4b`. In testing it stayed closest to what was actually said;
+llama3.2-3B and qwen2.5-3B made up facts. If the endpoint is down, earshot runs
+`llm_start` (default `ollama serve`) and stops it on exit.
 
 ```sh
-pkill -USR1 earshot   # save replay
-pkill -USR2 earshot   # start/stop clip
+ollama pull gemma3:4b
 ```
 
-## Instructions (LLM step)
+For a hosted free tier (Groq):
 
-Any OpenAI-compatible `/chat/completions` endpoint works. Free options:
+```
+llm_url = https://api.groq.com/openai/v1/chat/completions
+llm_model = llama-3.1-8b-instant
+```
 
-- **Ollama (local, default):** `ollama pull llama3.2`. earshot uses
-  `http://localhost:11434/v1/chat/completions`.
-- **Groq (free tier):** `EARSHOT_LLM_URL=https://api.groq.com/openai/v1/chat/completions
-  EARSHOT_LLM_MODEL=llama-3.1-8b-instant EARSHOT_API_KEY=... earshot`
+and set `EARSHOT_API_KEY` in your environment. The key is passed to curl
+through a private temp file, so it never shows in `ps`.
 
-Only new transcript lines are sent each time, along with recent output as context so
-repeats get dropped. With no instruction, nothing leaves your machine.
+With no instruction set, nothing leaves your machine.
 
 ## Limits
 
-- An app with several streams (e.g. Brave tabs) is captured through its first
-  stream; earshot re-attaches automatically when that app starts a new one.
-- Whisper on music gives lyric-ish guesses; it is tuned for speech.
-- Speech is split on pauses (energy VAD), so lines arrive 1–8 s after they're said.
+- An app with several audio streams is captured through its first one. earshot re-attaches when the app restarts.
+- On Windows, app capture needs build 20348 or newer. The Windows TUI was checked under Wine, whose terminal console mangles the layout; real Windows Terminal or conhost is untested.

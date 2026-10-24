@@ -1,58 +1,51 @@
 #include "earshot.h"
-#include <stdlib.h>
-#include <string.h>
+#include <cstring>
 
-void ring_init(Ring *r, double seconds) {
-    r->cap = (size_t)(seconds * RATE);
-    r->buf = (int16_t *)calloc(r->cap * CHANNELS, sizeof(int16_t));
-    r->total = 0;
-    pthread_mutex_init(&r->mu, NULL);
+void ringInit(Ring *ring, double seconds) {
+    ring->cap = (size_t)(seconds * capture_rate);
+    ring->buf.assign(ring->cap * capture_channels, 0);
+    ring->total = 0;
 }
 
-void ring_push(Ring *r, const int16_t *frames, size_t n) {
-    pthread_mutex_lock(&r->mu);
-    if (n > r->cap) {                        // keep only the newest cap frames
-        frames += (n - r->cap) * CHANNELS;
-        r->total += n - r->cap;
-        n = r->cap;
+void ringPush(Ring *ring, const int16_t *frames, size_t count) {
+    std::lock_guard<std::mutex> lock(ring->mu);
+    if (count > ring->cap) {
+        frames += (count - ring->cap) * capture_channels;
+        ring->total += count - ring->cap;
+        count = ring->cap;
     }
-    size_t pos = r->total % r->cap;
-    size_t first = n < r->cap - pos ? n : r->cap - pos;
-    memcpy(r->buf + pos * CHANNELS, frames, first * CHANNELS * sizeof(int16_t));
-    memcpy(r->buf, frames + first * CHANNELS, (n - first) * CHANNELS * sizeof(int16_t));
-    r->total += n;
-    pthread_mutex_unlock(&r->mu);
+    size_t pos = ring->total % ring->cap;
+    size_t first = count < ring->cap - pos ? count : ring->cap - pos;
+    int16_t *buf = ring->buf.data();
+    memcpy(buf + pos * capture_channels, frames, first * capture_channels * sizeof(int16_t));
+    memcpy(buf, frames + first * capture_channels, (count - first) * capture_channels * sizeof(int16_t));
+    ring->total += count;
 }
 
-uint64_t ring_total(Ring *r) {
-    pthread_mutex_lock(&r->mu);
-    uint64_t t = r->total;
-    pthread_mutex_unlock(&r->mu);
-    return t;
+uint64_t ringTotal(Ring *ring) {
+    std::lock_guard<std::mutex> lock(ring->mu);
+    return ring->total;
 }
 
-static uint64_t oldest_locked(Ring *r) {
-    return r->total > r->cap ? r->total - r->cap : 0;
+static uint64_t oldest(const Ring *ring) {
+    return ring->total > ring->cap ? ring->total - ring->cap : 0;
 }
 
-uint64_t ring_oldest(Ring *r) {
-    pthread_mutex_lock(&r->mu);
-    uint64_t o = oldest_locked(r);
-    pthread_mutex_unlock(&r->mu);
-    return o;
+uint64_t ringOldest(Ring *ring) {
+    std::lock_guard<std::mutex> lock(ring->mu);
+    return oldest(ring);
 }
 
-size_t ring_read(Ring *r, uint64_t *from, int16_t *out, size_t n) {
-    pthread_mutex_lock(&r->mu);
-    uint64_t oldest = oldest_locked(r);
-    if (*from < oldest) *from = oldest;
-    if (*from > r->total) *from = r->total;
-    uint64_t avail = r->total - *from;
-    if (n > avail) n = (size_t)avail;
-    size_t pos = *from % r->cap;
-    size_t first = n < r->cap - pos ? n : r->cap - pos;
-    memcpy(out, r->buf + pos * CHANNELS, first * CHANNELS * sizeof(int16_t));
-    memcpy(out + first * CHANNELS, r->buf, (n - first) * CHANNELS * sizeof(int16_t));
-    pthread_mutex_unlock(&r->mu);
-    return n;
+size_t ringRead(Ring *ring, uint64_t *from, int16_t *out, size_t count) {
+    std::lock_guard<std::mutex> lock(ring->mu);
+    if (*from < oldest(ring)) *from = oldest(ring);
+    if (*from > ring->total) *from = ring->total;
+    uint64_t avail = ring->total - *from;
+    if (count > avail) count = (size_t)avail;
+    size_t pos = *from % ring->cap;
+    size_t first = count < ring->cap - pos ? count : ring->cap - pos;
+    const int16_t *buf = ring->buf.data();
+    memcpy(out, buf + pos * capture_channels, first * capture_channels * sizeof(int16_t));
+    memcpy(out + first * capture_channels, buf, (count - first) * capture_channels * sizeof(int16_t));
+    return count;
 }
