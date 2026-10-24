@@ -130,6 +130,12 @@ static void testText() {
     lines.clear();
     wrapText("", 10, &lines);
     CHECK_EQ(lines.size(), (size_t)1);
+    // newlines start lines and tabs or control bytes never reach the terminal
+    lines.clear();
+    wrapText("one\ttwo\nthree\r\x07 four", 20, &lines);
+    CHECK_EQ(lines.size(), (size_t)2);
+    CHECK_EQ(lines[0], std::string("one two"));
+    CHECK_EQ(lines[1], std::string("three four"));
 }
 
 static void testMeter() {

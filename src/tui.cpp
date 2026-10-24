@@ -168,15 +168,17 @@ static void moveTo(int row, int col) {
     screen += b;
 }
 
-// writes s clipped or padded to exactly w columns
-static void cell(const std::string &s, int w) {
+// writes s clipped or padded to exactly w columns with any control bytes but escapes turned into spaces
+static void cell(const std::string &raw, int w) {
+    std::string s = raw;
+    for (char &c : s)
+        if ((unsigned char)c < 0x20 && c != '\x1b') c = ' ';
     size_t n = fitBytes(s, w);
     screen.append(s, 0, n);
     for (int c = textWidth(s.substr(0, n)); c < w; c++) screen.push_back(' ');
 }
 
-void wrapText(const std::string &text, int w, std::vector<std::string> *out) {
-    if (w < 4) w = 4;
+static void wrapLine(const std::string &text, int w, std::vector<std::string> *out) {
     size_t i = 0;
     while (i < text.size()) {
         size_t n = fitBytes(text.substr(i), w);
@@ -184,12 +186,34 @@ void wrapText(const std::string &text, int w, std::vector<std::string> *out) {
             size_t space = text.rfind(' ', i + n);
             if (space != std::string::npos && space > i) n = space - i;
         }
-        if (n == 0) n = 1;
+        // a character wider than the whole line still has to go somewhere
+        if (n == 0) {
+            n = 1;
+            while (i + n < text.size() && ((unsigned char)text[i + n] & 0xC0) == 0x80) n++;
+        }
         out->push_back(text.substr(i, n));
         i += n;
         while (i < text.size() && text[i] == ' ') i++;
     }
     if (text.empty()) out->push_back("");
+}
+
+// wraps on spaces and honours newlines; tabs become spaces and other control bytes are dropped
+// so text from whisper or an ai can never move the cursor
+void wrapText(const std::string &text, int w, std::vector<std::string> *out) {
+    if (w < 4) w = 4;
+    std::string line;
+    for (size_t i = 0; i <= text.size(); i++) {
+        char c = i < text.size() ? text[i] : '\n';
+        if (c == '\n') {
+            wrapLine(line, w, out);
+            line.clear();
+        } else if (c == '\t') {
+            line.push_back(' ');
+        } else if ((unsigned char)c >= 0x20 || c == '\x1b') {
+            line.push_back(c);
+        }
+    }
 }
 
 // peak level to lit meter cells on a -60 to 0 dbfs scale
