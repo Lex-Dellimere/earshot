@@ -1,5 +1,6 @@
 #include "../earshot.h"
 #include <windows.h>
+#include <shellapi.h>
 #include <direct.h>
 #include <cctype>
 #include <cstdlib>
@@ -202,6 +203,13 @@ bool pollCommand(std::string *cmd) {
     *cmd = commands.front();
     commands.erase(commands.begin());
     return true;
+}
+
+void openPath(const std::string &path) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? n : 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), n);
+    ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 static std::atomic<bool> *quit_flag;

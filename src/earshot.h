@@ -36,11 +36,13 @@ struct Config {
     int beam = 1;
     bool context = true;
 
-    std::string out_dir = "~/Music/earshot";
+    std::string transcript_dir = "~/Documents/earshot";
+    bool save_transcript = true;
+    bool timestamps = false;
+    std::string clip_dir = "~/Music/earshot";
     float before = 10;
     float replay = 30;
     float playback = 10;
-    bool save_transcript = true;
 
     std::string instruction;
     std::string llm_url = "http://127.0.0.1:11434/v1/chat/completions";
@@ -55,6 +57,8 @@ struct Config {
     std::string key_instruction = "i";
     std::string key_process = "p";
     std::string key_clear = "x";
+    std::string key_timestamps = "t";
+    std::string key_folder = "o";
     std::string key_quit = "q";
     std::string hotkey_clip = "ctrl+alt+c";
     std::string hotkey_replay = "ctrl+alt+r";
@@ -66,6 +70,7 @@ bool configLoad(Config *cfg, const std::string &path, std::string *err);
 bool configApply(Config *cfg, const std::string &key, const std::string &value);
 void configSet(const std::string &path, const char *key, const std::string &value);
 std::string expandPath(const std::string &path);
+std::string shortPath(const std::string &path);
 std::string modelPath(const std::string &name);
 
 // ring buffer of interleaved stereo frames addressed by absolute index
@@ -109,10 +114,20 @@ void normalizeChunk(std::vector<float> *pcm);
 // transcription
 
 struct Line {
-    double time;
+    double time;           // wall time the speech started
     std::string text;
     int channel = Them;
+    double end = 0;        // wall time the speech ended
+    double added = 0;      // wall time the text arrived
     bool dropped = false;  // an echo of the other channel
+};
+
+struct Paragraph {
+    int channel;
+    double start, end;
+    std::string text;
+    size_t first, last;  // range of lines in the transcript including dropped ones
+    bool final;          // nothing later can change it
 };
 
 struct Transcript {
@@ -122,11 +137,13 @@ struct Transcript {
 };
 
 void transcriptAdd(Transcript *tr, Line line);
+std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, double now, const bool *pending = nullptr);
 
 struct Transcriber;
 Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note);
 void transcriberReset(Transcriber *t, int channel);
 bool transcriberBusy(Transcriber *t);
+bool transcriberPending(Transcriber *t, int channel);
 void transcriberStop(Transcriber *t);
 void transcriberDrain(Transcriber *t);
 
@@ -187,6 +204,7 @@ int runProcess(const std::vector<std::string> &args, std::string *out);
 struct Process;
 Process *spawnProcess(const std::vector<std::string> &args);
 void killProcess(Process *proc);
+void openPath(const std::string &path);
 
 void platformInit(std::atomic<bool> *quit);
 bool controlListen(std::string *err);
@@ -229,6 +247,9 @@ struct View {
     bool message_error;
     std::vector<std::pair<std::string, std::string>> help;
     Overlay overlay;
+    bool timestamps;
+    bool labels;
+    std::string transcript_path;
 };
 
 void tuiSetColor(bool on);

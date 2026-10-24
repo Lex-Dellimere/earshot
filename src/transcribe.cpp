@@ -21,6 +21,7 @@ struct Worker {
     whisper_vad_context *vad = nullptr;
     std::thread thread;
     std::atomic<bool> reset{ false };
+    std::atomic<bool> pending{ false };  // inside an utterance or transcribing one
     std::string last_text;
 };
 
@@ -89,7 +90,7 @@ static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
     if (a == std::string::npos) return;
     text = text.substr(a);
     w->last_text = text;
-    transcriptAdd(t->tr, { start, text, w->channel });
+    transcriptAdd(t->tr, { start, text, w->channel, start + (double)pcm.size() / whisper_rate });
 }
 
 static void worker(Worker *w) {
@@ -119,6 +120,7 @@ static void worker(Worker *w) {
             fresh_used = 0;
             pcm.clear();
             speaking = false;
+            w->pending = false;
             if (w->vad) whisper_vad_reset_state(w->vad);
         }
         uint64_t total = ringTotal(w->ring), from = cursor;
@@ -171,6 +173,7 @@ static void worker(Worker *w) {
             if (!speaking) {
                 if (voiced) {
                     speaking = true;
+                    w->pending = true;
                     silence_ms = 0;
                 } else if (pcm.size() > preroll) {
                     start += (double)(pcm.size() - preroll) / whisper_rate;
@@ -184,6 +187,7 @@ static void worker(Worker *w) {
                 runWhisper(w, pcm, start);
                 pcm.clear();
                 speaking = !ended;
+                w->pending = speaking;
                 silence_ms = 0;
                 if (ended && w->vad) whisper_vad_reset_state(w->vad);
             }
@@ -242,6 +246,10 @@ void transcriberReset(Transcriber *t, int channel) {
 
 bool transcriberBusy(Transcriber *t) {
     return t->busy > 0;
+}
+
+bool transcriberPending(Transcriber *t, int channel) {
+    return t->workers[channel].pending;
 }
 
 static void finish(Transcriber *t) {

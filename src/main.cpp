@@ -98,7 +98,6 @@ int main(int argc, char **argv) {
     }
     if (!source_arg.empty()) cfg.source = source_arg;
     if (!mic_arg.empty()) cfg.mic = mic_arg == "off" ? "" : mic_arg;
-    cfg.out_dir = expandPath(cfg.out_dir);
     tuiSetColor(cfg.color);
     if (!file_arg.empty()) return transcribeFile(cfg, file_arg);
 

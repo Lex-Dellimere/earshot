@@ -361,23 +361,28 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     int transcript_rows = v.instruction.empty() ? avail : avail / 2;
     int processed_rows = avail - transcript_rows;
 
+    // paragraphs with the speaker and time once at the start and a hanging indent after
     std::vector<std::string> raw, processed;
     {
         std::lock_guard<std::mutex> lock(v.tr->mu);
-        bool both = v.active[Them] && v.active[You];
-        int name_w = both ? std::max(textWidth(v.label[Them]), textWidth(v.label[You])) + 2 : 0;
-        for (size_t i = 0; i < v.tr->raw.size(); i++) {
-            const Line &l = v.tr->raw[i];
-            if (l.dropped) continue;
-            bool newest = i + 1 == v.tr->raw.size();
-            std::string name = both ? v.label[l.channel] : "";
-            while (textWidth(name) < name_w) name += " ";
-            std::string blank(name_w, ' ');
+        std::vector<Paragraph> paras = transcriptParagraphs(v.tr, 0, nowSeconds());
+        int name_w = v.labels ? std::max(textWidth(v.label[Them]), textWidth(v.label[You])) + 2 : 0;
+        int indent = name_w + (v.timestamps ? 10 : 0);
+        for (size_t i = 0; i < paras.size(); i++) {
+            const Paragraph &p = paras[i];
+            std::string head;
+            if (v.timestamps) head += std::string(paint(gray)) + timestamp(p.start) + "  " + paint(reset);
+            if (v.labels) {
+                std::string name = v.label[p.channel];
+                while (textWidth(name) < name_w) name += " ";
+                head += std::string(paint(bold)) + paint(p.channel == You ? cyan : magenta) + name + paint(reset);
+            }
+            const char *body = i + 1 == paras.size() ? paint(white) : "";
             std::vector<std::string> parts;
-            wrapText(l.text, rw - 12 - name_w, &parts);
+            wrapText(p.text, rw - 2 - indent, &parts);
             for (size_t k = 0; k < parts.size(); k++)
-                raw.push_back(std::string(paint(gray)) + (k == 0 ? timestamp(l.time) : "        ") + paint(reset) + "  " +
-                              paint(l.channel == You ? cyan : magenta) + (k == 0 ? name : blank) + paint(reset) + (newest ? paint(white) : "") + parts[k]);
+                raw.push_back((k == 0 ? head : std::string(indent, ' ')) + body + parts[k]);
+            if (i + 1 < paras.size()) raw.push_back("");
         }
         for (const std::string &p : v.tr->processed) {
             wrapText(p, rw - 2, &processed);
@@ -386,7 +391,8 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     }
 
     moveTo(row++, rx);
-    cell(std::string(paint(bold)) + paint(cyan) + " Transcript" + paint(reset) + paint(gray) + (v.scroll ? "  scrolled  PgDn to follow" : "") + paint(reset), rw);
+    cell(std::string(paint(bold)) + paint(cyan) + " Transcript" + paint(reset) + paint(gray) + "  " +
+         (v.scroll ? "scrolled  PgDn to follow" : v.transcript_path) + paint(reset), rw);
     row = drawText(row, rx, rw, transcript_rows - 1, raw, v.scroll, "");
     if (processed_rows > 0) {
         moveTo(row++, rx);

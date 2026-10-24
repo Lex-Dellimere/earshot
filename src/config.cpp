@@ -36,11 +36,13 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     INTEGER(beam, "beam search width where 1 is fastest"),
     FLAG(context, "give whisper the previous line so sentences carry over"),
 
-    TEXT(out_dir, "where clips replays and transcripts are saved"),
+    TEXT(transcript_dir, "where transcripts are saved"),
+    FLAG(save_transcript, "write the transcript to a file in transcript_dir"),
+    FLAG(timestamps, "show the time each paragraph started in the tui and the files"),
+    TEXT(clip_dir, "where clips and replays are saved"),
     NUMBER(before, "seconds of audio a clip starts with"),
     NUMBER(replay, "length in seconds of an instant replay save"),
     NUMBER(playback, "seconds played back by the play key"),
-    FLAG(save_transcript, "write the transcript to a file in out_dir"),
 
     TEXT(instruction, "what the ai does with the transcript or empty to turn it off"),
     TEXT(llm_url, "any openai compatible chat completions endpoint"),
@@ -55,6 +57,8 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     TEXT(key_instruction, nullptr),
     TEXT(key_process, nullptr),
     TEXT(key_clear, nullptr),
+    TEXT(key_timestamps, nullptr),
+    TEXT(key_folder, nullptr),
     TEXT(key_quit, nullptr),
     TEXT(hotkey_clip, "global hotkeys on x11 and windows like ctrl+alt+c and empty to disable"),
     TEXT(hotkey_replay, nullptr),
@@ -68,6 +72,12 @@ std::string configPath() {
 
 std::string expandPath(const std::string &path) {
     if (path.size() >= 1 && path[0] == '~') return homeDir() + path.substr(1);
+    return path;
+}
+
+std::string shortPath(const std::string &path) {
+    std::string home = homeDir();
+    if (!home.empty() && path.compare(0, home.size(), home) == 0) return "~" + path.substr(home.size());
     return path;
 }
 
@@ -106,9 +116,15 @@ static void writeDefaults(const std::string &path) {
     fclose(f);
 }
 
+// keys renamed since earlier versions still load
+static const char *renamed(const std::string &key) {
+    if (key == "out_dir") return "clip_dir";
+    return key.c_str();
+}
+
 bool configApply(Config *cfg, const std::string &key, const std::string &value) {
     for (const Field &field : fieldsOf(cfg)) {
-        if (key != field.key) continue;
+        if (strcmp(renamed(key), field.key) != 0) continue;
         switch (field.type) {
         case FieldType::Text: *(std::string *)field.ptr = value; break;
         case FieldType::Number: *(float *)field.ptr = (float)atof(value.c_str()); break;

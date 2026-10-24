@@ -160,6 +160,23 @@ void killProcess(Process *proc) {
     delete proc;
 }
 
+// opens a folder or file in the desktop's default app without tying it to our lifetime
+void openPath(const std::string &path) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        if (fork() == 0) {
+            int null = open("/dev/null", O_RDWR);
+            dup2(null, 0);
+            dup2(null, 1);
+            dup2(null, 2);
+            execlp("xdg-open", "xdg-open", path.c_str(), (char *)nullptr);
+        }
+        _exit(0);
+    }
+    if (pid > 0) waitpid(pid, nullptr, 0);
+}
+
 static std::atomic<bool> *quit_flag;
 
 static void onSignal(int) {

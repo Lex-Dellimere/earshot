@@ -140,7 +140,45 @@ static void testMeter() {
     CHECK_EQ(meterCells(2.0f), 10);
 }
 
+static void testTranscript() {
+    Transcript tr;
+    double t0 = 1000;
+    transcriptAdd(&tr, { t0, "hello there how are you", Them, t0 + 2 });
+    transcriptAdd(&tr, { t0 + 2.5, "I am fine thanks", Them, t0 + 4 });  // short pause joins
+    transcriptAdd(&tr, { t0 + 4.5, "good to hear", You, t0 + 5.5 });
+    transcriptAdd(&tr, { t0 + 20, "much later now", You, t0 + 21 });  // long pause splits
+    double now = nowSeconds();
+    std::vector<Paragraph> p = transcriptParagraphs(&tr, 0, now);
+    CHECK_EQ(p.size(), (size_t)3);
+    CHECK_EQ(p[0].text, std::string("hello there how are you I am fine thanks"));
+    CHECK_EQ(p[0].channel, (int)Them);
+    CHECK(p[0].final);
+    CHECK_EQ(p[1].channel, (int)You);
+    CHECK(!p[1].final);  // a you line waits in case it turns out to be an echo
+    CHECK(transcriptParagraphs(&tr, 0, now + 10)[1].final);
+    CHECK(!transcriptParagraphs(&tr, 0, now + 1)[2].final);
+    bool speaking[channel_count] = { true, false };
+    transcriptAdd(&tr, { t0 + 30, "them again", Them, t0 + 31 });
+    CHECK(!transcriptParagraphs(&tr, 0, now + 10, speaking).back().final);  // more may join while them speaks
+    speaking[Them] = false;
+    CHECK(transcriptParagraphs(&tr, 0, now + 10, speaking).back().final);
+    // a you line repeating them at the same moment is speaker bleed whichever arrives first
+    Transcript echo;
+    transcriptAdd(&echo, { t0, "ask what you can do for your country", You, t0 + 3 });
+    transcriptAdd(&echo, { t0 + 0.5, "ask what you can do for your country!", Them, t0 + 3 });
+    transcriptAdd(&echo, { t0 + 1, "What your country can do for you", Them, t0 + 3 });
+    transcriptAdd(&echo, { t0 + 1.2, "what your country can do for you", You, t0 + 3 });
+    transcriptAdd(&echo, { t0 + 2, "no that is not what I said", You, t0 + 3 });
+    CHECK(echo.raw[0].dropped);
+    CHECK(echo.raw[3].dropped);
+    CHECK(!echo.raw[4].dropped);
+    std::vector<Paragraph> e = transcriptParagraphs(&echo, 0, now + 10);
+    CHECK_EQ(e.size(), (size_t)2);
+    CHECK_EQ(e[1].text, std::string("no that is not what I said"));
+}
+
 int main() {
+    testTranscript();
     testText();
     testMeter();
     testRing();

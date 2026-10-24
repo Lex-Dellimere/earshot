@@ -33,10 +33,10 @@ static std::string fileTag(const std::string &label) {
     return tag.empty() ? "clip" : tag.substr(0, 40);
 }
 
-static std::string stamp() {
+static std::string timeText(const char *format) {
     time_t now = time(nullptr);
-    char b[32];
-    strftime(b, sizeof b, "%Y%m%d-%H%M%S", localtime(&now));
+    char b[64];
+    strftime(b, sizeof b, format, localtime(&now));
     return b;
 }
 
@@ -75,9 +75,10 @@ struct App {
 
     Clip clips[channel_count];
     FILE *raw_file = nullptr, *processed_file = nullptr;
-    std::string session;
+    std::string session, transcript_path;
     size_t written_raw = 0, printed_raw = 0, printed_processed = 0, llm_upto = 0;
     double llm_last = 0;
+    bool spoke[channel_count] = {};
 
     std::vector<Source> sources;
     int selected = 0, scroll = 0;
@@ -93,9 +94,11 @@ struct App {
 
     void say(const std::string &text, bool error);
     bool active(int ch, Source *out = nullptr);
-    bool bothActive();
+    bool labels();
     std::string label(int ch);
     std::string lineText(const Line &l, bool time);
+    std::string paragraphText(const Paragraph &p);
+    bool openTranscript();
     void listen(const Source &s);
     void dumpTranscript(double since, const std::string &wav);
     void command(const std::string &cmd);
@@ -103,6 +106,7 @@ struct App {
     void runLlm(bool force);
     void takeLlmResults();
     void writeNewLines();
+    void flushAll();
     std::vector<std::pair<std::string, std::string>> help(bool wide);
     void draw();
 };
@@ -121,8 +125,9 @@ bool App::active(int ch, Source *out) {
     return on;
 }
 
-bool App::bothActive() {
-    return active(Them) && active(You);
+// speakers are named once both channels are on or both have said something
+bool App::labels() {
+    return (spoke[Them] && spoke[You]) || (active(Them) && active(You));
 }
 
 std::string App::label(int ch) {
@@ -133,8 +138,36 @@ std::string App::label(int ch) {
 std::string App::lineText(const Line &l, bool time) {
     std::string s;
     if (time) s += "[" + clockText(l.time) + "] ";
-    if (bothActive()) s += label(l.channel) + ": ";
+    if (labels()) s += label(l.channel) + ": ";
     return s + l.text;
+}
+
+std::string App::paragraphText(const Paragraph &p) {
+    std::string s;
+    if (cfg.timestamps) s += "[" + clockText(p.start) + "] ";
+    if (labels()) s += label(p.channel) + ": ";
+    return s + p.text;
+}
+
+// the file is made on the first paragraph so runs that hear nothing leave nothing behind
+bool App::openTranscript() {
+    if (raw_file) return true;
+    if (!cfg.save_transcript) return false;
+    std::string dir = expandPath(cfg.transcript_dir);
+    makeDirs(dir);
+    raw_file = fopen(transcript_path.c_str(), "a");
+    if (!raw_file) {
+        say("cannot write " + transcript_path, true);
+        cfg.save_transcript = false;
+        return false;
+    }
+    std::string heard;
+    for (int ch = 0; ch < channel_count; ch++) {
+        Source s;
+        if (active(ch, &s)) heard += (heard.empty() ? "" : "   ") + label(ch) + ": " + s.label;
+    }
+    fprintf(raw_file, "earshot transcript %s\n%s\n\n", timeText("%Y-%m-%d %H:%M").c_str(), heard.c_str());
+    return true;
 }
 
 bool App::start(std::string *err) {
@@ -167,11 +200,8 @@ bool App::start(std::string *err) {
     if (note.empty()) note = hotkey_report;
     platformInit(&quit);
 
-    session = stamp();
-    if (cfg.save_transcript) {
-        makeDirs(cfg.out_dir + "/transcripts");
-        raw_file = fopen((cfg.out_dir + "/transcripts/" + session + ".txt").c_str(), "a");
-    }
+    session = timeText("%Y-%m-%d_%H-%M");
+    transcript_path = expandPath(cfg.transcript_dir) + "/" + session + "_" + fileTag(them.label) + ".txt";
     model_name = cfg.model;
     if (model_name.find_last_of("/\\") != std::string::npos) model_name = model_name.substr(model_name.find_last_of("/\\") + 1);
     if (!note.empty()) say(note, false);
@@ -223,7 +253,7 @@ void App::command(const std::string &cmd) {
             Source s;
             if (!active(ch, &s)) continue;
             std::string tag = fileTag(s.label) + (ch == You ? "-mic" : "");
-            if (!clipBegin(&clips[ch], &rings[ch], cfg.out_dir, cfg.before, tag)) return say("cannot write " + clips[ch].path, true);
+            if (!clipBegin(&clips[ch], &rings[ch], expandPath(cfg.clip_dir), cfg.before, tag)) return say("cannot write " + clips[ch].path, true);
             any = true;
         }
         if (any) say("clipping from " + std::to_string((int)cfg.before) + "s ago until you press clip again", false);
@@ -236,7 +266,7 @@ void App::command(const std::string &cmd) {
             if (!active(ch, &s)) continue;
             Clip r;
             std::string tag = fileTag(s.label) + (ch == You ? "-mic" : "") + "-replay";
-            if (!clipBegin(&r, &rings[ch], cfg.out_dir, cfg.replay, tag)) return say("cannot write " + r.path, true);
+            if (!clipBegin(&r, &rings[ch], expandPath(cfg.clip_dir), cfg.replay, tag)) return say("cannot write " + r.path, true);
             clipEnd(&r);
             if (first.empty()) first = r.path, start = r.start_time;
         }
@@ -256,8 +286,22 @@ void App::command(const std::string &cmd) {
     } else if (cmd == "process") {
         if (cfg.instruction.empty()) say("set an instruction first", true);
         else runLlm(true);
+    } else if (cmd == "timestamps") {
+        cfg.timestamps = !cfg.timestamps;
+        configSet(config_path, "timestamps", cfg.timestamps ? "true" : "false");
+        say(cfg.timestamps ? "timestamps on" : "timestamps off", false);
+    } else if (cmd == "folder") {
+        std::string dir = expandPath(cfg.transcript_dir);
+        makeDirs(dir);
+        openPath(dir);
+        say("opened " + shortPath(dir), false);
     } else if (cmd == "clear") {
         std::lock_guard<std::mutex> lock(tr.mu);
+        // the file keeps everything said so far
+        for (const Paragraph &p : transcriptParagraphs(&tr, written_raw, nowSeconds() + 3600)) {
+            if (!openTranscript()) break;
+            fprintf(raw_file, "%s\n\n", paragraphText(p).c_str());
+        }
         tr.raw.clear();
         tr.processed.clear();
         llm_upto = written_raw = printed_raw = printed_processed = 0;
@@ -300,8 +344,8 @@ void App::takeLlmResults() {
         std::lock_guard<std::mutex> lock(tr.mu);
         if (result.empty() || recentlySaid(tr.processed, result)) continue;
         tr.processed.push_back(result);
-        if (cfg.save_transcript && !processed_file)
-            processed_file = fopen((cfg.out_dir + "/transcripts/" + session + "-processed.txt").c_str(), "a");
+        if (cfg.save_transcript && !processed_file && openTranscript())
+            processed_file = fopen((transcript_path.substr(0, transcript_path.size() - 4) + "_ai.txt").c_str(), "a");
         if (processed_file) {
             fprintf(processed_file, "%s\n\n", result.c_str());
             fflush(processed_file);
@@ -309,17 +353,52 @@ void App::takeLlmResults() {
     }
 }
 
+// files get whole paragraphs once they can no longer change and stdout gets lines once settled
 void App::writeNewLines() {
     std::lock_guard<std::mutex> lock(tr.mu);
-    for (; raw_file && written_raw < tr.raw.size(); written_raw++)
-        if (!tr.raw[written_raw].dropped) fprintf(raw_file, "%s\n", lineText(tr.raw[written_raw], true).c_str());
-    if (raw_file) fflush(raw_file);
+    double now = nowSeconds();
+    for (const Line &l : tr.raw)
+        if (!l.dropped) spoke[l.channel] = true;
+    if (cfg.save_transcript) {
+        bool pending[channel_count];
+        for (int ch = 0; ch < channel_count; ch++) pending[ch] = transcriberPending(transcriber, ch);
+        for (const Paragraph &p : transcriptParagraphs(&tr, written_raw, now, pending)) {
+            if (!p.final) break;
+            if (!openTranscript()) break;
+            fprintf(raw_file, "%s\n\n", paragraphText(p).c_str());
+            written_raw = p.last + 1;
+        }
+        if (raw_file) fflush(raw_file);
+    }
     if (!print) return;
-    for (; printed_raw < tr.raw.size(); printed_raw++)
-        if (!tr.raw[printed_raw].dropped) printf("%s\n", lineText(tr.raw[printed_raw], true).c_str());
+    for (; printed_raw < tr.raw.size(); printed_raw++) {
+        const Line &l = tr.raw[printed_raw];
+        // a you line may still turn out to be an echo of them
+        if (l.channel == You && active(Them) && now - l.added < 6) break;
+        if (!l.dropped) printf("%s\n", lineText(l, cfg.timestamps).c_str());
+    }
     for (; printed_processed < tr.processed.size(); printed_processed++)
         printf("» %s\n", tr.processed[printed_processed].c_str());
     fflush(stdout);
+}
+
+// writes what is left when quitting since nothing more can arrive
+void App::flushAll() {
+    std::lock_guard<std::mutex> lock(tr.mu);
+    for (const Line &l : tr.raw)
+        if (!l.dropped) spoke[l.channel] = true;
+    if (cfg.save_transcript) {
+        for (const Paragraph &p : transcriptParagraphs(&tr, written_raw, nowSeconds() + 3600)) {
+            if (!openTranscript()) break;
+            fprintf(raw_file, "%s\n\n", paragraphText(p).c_str());
+            written_raw = p.last + 1;
+        }
+    }
+    if (print) {
+        for (; printed_raw < tr.raw.size(); printed_raw++)
+            if (!tr.raw[printed_raw].dropped) printf("%s\n", lineText(tr.raw[printed_raw], cfg.timestamps).c_str());
+        fflush(stdout);
+    }
 }
 
 // most useful first because the footer shows only what fits
@@ -327,7 +406,8 @@ std::vector<std::pair<std::string, std::string>> App::help(bool wide) {
     return {
         { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_clip, "clip" },
         { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_instruction, "instruction" },
-        { cfg.key_process, "process" }, { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
+        { cfg.key_process, "process" }, { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" },
+        { cfg.key_clear, "clear" }, { "PgUp/Dn", "scroll" },
     };
 }
 
@@ -376,6 +456,7 @@ void App::key(int key, const std::string &text) {
         const std::pair<std::string, const char *> keys[] = {
             { cfg.key_clip, "clip" }, { cfg.key_replay, "replay" }, { cfg.key_play, "play" },
             { cfg.key_process, "process" }, { cfg.key_clear, "clear" }, { cfg.key_quit, "quit" },
+            { cfg.key_timestamps, "timestamps" }, { cfg.key_folder, "folder" },
         };
         for (const auto &[name, cmd] : keys)
             if (key == keyCode(name)) command(cmd);
@@ -418,6 +499,9 @@ void App::draw() {
     v.message_error = message_error;
     v.help = help(tuiWide());
     v.overlay = overlay;
+    v.timestamps = cfg.timestamps;
+    v.labels = labels();
+    v.transcript_path = !cfg.save_transcript ? "not saved" : raw_file ? shortPath(transcript_path) : "saving to " + shortPath(expandPath(cfg.transcript_dir));
     tuiDraw(v);
 }
 
@@ -455,7 +539,7 @@ void App::stop() {
         if (first.empty()) first = clips[ch].path, start = clips[ch].start_time;
     }
     if (transcriber) transcriberStop(transcriber);
-    if (audio) writeNewLines();
+    if (audio) flushAll();
     if (!first.empty()) {
         dumpTranscript(start, first);
         fprintf(stderr, "earshot: clip saved %s\n", first.c_str());
