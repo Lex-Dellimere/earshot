@@ -333,6 +333,7 @@ void App::command(const std::string &cmd) {
         }
         tr.raw.clear();
         tr.processed.clear();
+        for (std::string &p : tr.partial) p.clear();
         llm_upto = written_raw = printed_raw = printed_processed = 0;
         scroll = 0;
     } else if (cmd == "quit") {
@@ -471,7 +472,7 @@ void App::applySetting(const Setting &s, const std::string &before) {
         Source them;
         transcript_path = expandPath(cfg.transcript_dir) + "/" + session + "_" + fileTag(active(Them, &them) ? them.label : "earshot") + ".txt";
     } else if (key == "language" || key == "beam" || key == "vad_threshold" || key == "context" || key == "focus" ||
-               key == "highpass" || key == "normalize" || key == "threads" || key == "chunk") {
+               key == "highpass" || key == "normalize" || key == "threads" || key == "chunk" || key == "live" || key == "live_every") {
         transcriberConfigure(transcriber, cfg);
     }
     say(s.restart ? "saved, applies the next time earshot starts" : "saved", false);

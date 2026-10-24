@@ -39,6 +39,8 @@ struct Config {
     bool normalize = true;
     int beam = 1;
     bool context = true;
+    bool live = true;
+    float live_every = 1;
 
     std::string transcript_dir = "~/Documents/earshot";
     bool save_transcript = true;
@@ -152,9 +154,12 @@ struct Transcript {
     std::mutex mu;
     std::vector<Line> raw;
     std::vector<std::string> processed;
+    std::string partial[channel_count];  // the sentence being spoken right now, replaced by its line
+    double partial_time[channel_count] = {};
 };
 
 void transcriptAdd(Transcript *tr, Line line);
+void transcriptPartial(Transcript *tr, int channel, double time, const std::string &text);
 std::vector<std::string> plainWords(const std::string &s);
 std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, double now, const bool *pending = nullptr);
 

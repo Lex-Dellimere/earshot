@@ -36,6 +36,8 @@ static std::vector<Field> fieldsOf(Config *cfg) {
     FLAG(normalize, "bring quiet speech up to a steady level before whisper"),
     INTEGER(beam, "beam search width where 1 is fastest"),
     FLAG(context, "give whisper the previous line so sentences carry over"),
+    FLAG(live, "show a grey guess of the sentence being spoken, replaced when the speaker pauses"),
+    NUMBER(live_every, "seconds between live guesses"),
 
     TEXT(transcript_dir, "where transcripts are saved"),
     FLAG(save_transcript, "write the transcript to a file in transcript_dir"),

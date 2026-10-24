@@ -16,6 +16,8 @@ static const std::vector<Setting> list = {
     { "beam", "Beam search", "1 is fastest. 5 is a little more accurate and cheap on a gpu.", Setting::Number, 1, 1, 8 },
     { "vad", "Speech detection", "silero is best, energy is simpler, off transcribes everything like song lyrics.", Setting::Choice, 0, 0, 0, true, { "silero", "energy", "off" } },
     { "vad_threshold", "Detection threshold", "Lower catches quieter speech, higher ignores more noise.", Setting::Number, 0.05f, 0.05f, 0.95f },
+    { "live", "Live text", "Show a grey guess of the sentence while it is spoken. Costs extra work; turn off if whisper falls behind.", Setting::Toggle },
+    { "live_every", "Live update (s)", "Seconds between live guesses.", Setting::Number, 0.5f, 0.5f, 5 },
     { "context", "Carry context", "Give whisper the previous line so sentences continue.", Setting::Toggle },
     { "focus", "Focus on the centre", "Keeps sound panned to the middle. Helps against wide crowd noise, hurts when music has a centred lead vocal.", Setting::Toggle },
     { "highpass", "Cut bass below (Hz)", "Removes rumble and bass. 0 turns it off.", Setting::Number, 25, 0, 400 },

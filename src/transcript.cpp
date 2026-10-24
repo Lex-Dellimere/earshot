@@ -48,9 +48,16 @@ static std::vector<const Line *> near(const Transcript *tr, int channel, double 
 
 // speakers bleeding into a mic would repeat the other side so those you lines are dropped
 // whichever channel finishes its chunk first
+void transcriptPartial(Transcript *tr, int channel, double time, const std::string &text) {
+    std::lock_guard<std::mutex> lock(tr->mu);
+    tr->partial[channel] = text;
+    tr->partial_time[channel] = time;
+}
+
 void transcriptAdd(Transcript *tr, Line line) {
     std::lock_guard<std::mutex> lock(tr->mu);
     line.added = nowSeconds();
+    tr->partial[line.channel].clear();
     if (line.channel == You) {
         line.dropped = overlap(line.text, near(tr, Them, line.time)) >= 0.7f;
     } else {

@@ -134,7 +134,7 @@ static void runWhisper(Worker *w, std::vector<float> pcm, double start) {
     std::string text = decode(t, w->cfg, pcm, prompted ? w->last_text.c_str() : nullptr);
     if (prompted && echoesPrompt(text, w->last_text)) text = decode(t, w->cfg, pcm, nullptr);
     t->busy--;
-    if (text.empty()) return;
+    if (text.empty()) return transcriptPartial(t->tr, w->channel, 0, "");
     w->last_text = text;
     transcriptAdd(t->tr, { start, text, w->channel, start + (double)pcm.size() / whisper_rate });
 }
@@ -153,7 +153,7 @@ static void worker(Worker *w) {
     // start from the oldest audio so speech captured while the model loaded is kept
     uint64_t cursor = 0;
     std::vector<float> fresh, pcm;
-    size_t fresh_used = 0;
+    size_t fresh_used = 0, partial_at = 0;
     float noise = 0.01f;
     bool speaking = false;
     int silence_ms = 0;
@@ -175,6 +175,8 @@ static void worker(Worker *w) {
             pcm.clear();
             speaking = false;
             w->pending = false;
+            partial_at = 0;
+            transcriptPartial(t->tr, w->channel, 0, "");
             if (w->vad) whisper_vad_reset_state(w->vad);
         }
         uint64_t total = ringTotal(w->ring), from = cursor;
@@ -246,6 +248,22 @@ static void worker(Worker *w) {
                 if (ended && w->vad) whisper_vad_reset_state(w->vad);
             }
         }
+        // a guess at the sentence so far shows while it is still being spoken
+        if (speaking && w->cfg.live && pcm.size() >= (size_t)whisper_rate &&
+            pcm.size() >= partial_at + (size_t)(w->cfg.live_every * whisper_rate)) {
+            double behind = (double)(ringTotal(w->ring) - cursor) / capture_rate;
+            if (behind < 0.5) {
+                partial_at = pcm.size();
+                std::vector<float> copy = pcm;
+                if (w->cfg.normalize) normalizeChunk(&copy);
+                bool prompted = w->cfg.context && !w->last_text.empty();
+                t->busy++;
+                std::string guess = decode(t, w->cfg, copy, prompted ? w->last_text.c_str() : nullptr);
+                t->busy--;
+                transcriptPartial(t->tr, w->channel, start, guess);
+            }
+        }
+        if (pcm.empty()) partial_at = 0;
         fresh_used += windows * vad_window;
         if (fresh_used > (size_t)whisper_rate) {
             fresh.erase(fresh.begin(), fresh.begin() + fresh_used);

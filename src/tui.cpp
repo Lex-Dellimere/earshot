@@ -420,6 +420,21 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
     {
         std::lock_guard<std::mutex> lock(v.tr->mu);
         std::vector<Paragraph> paras = transcriptParagraphs(v.tr, 0, nowSeconds());
+        // live guesses join their speaker's last paragraph or start a new one, marked to draw grey
+        std::vector<size_t> guess_at(paras.size() + channel_count, std::string::npos);
+        for (int ch = 0; ch < channel_count; ch++) {
+            if (v.tr->partial[ch].empty()) continue;
+            Paragraph *last = nullptr;
+            for (Paragraph &p : paras)
+                if (p.channel == ch) last = &p;
+            if (last && last == &paras.back() && v.tr->partial_time[ch] - last->end <= 2.5) {
+                guess_at[paras.size() - 1] = last->text.size() + 1;
+                last->text += " " + v.tr->partial[ch];
+            } else {
+                paras.push_back({ ch, v.tr->partial_time[ch], v.tr->partial_time[ch], v.tr->partial[ch], 0, 0, false });
+                guess_at[paras.size() - 1] = 0;
+            }
+        }
         int name_w = v.labels ? std::max(textWidth(v.label[Them]), textWidth(v.label[You])) + 2 : 0;
         int indent = name_w + (v.timestamps ? 10 : 0);
         for (size_t i = 0; i < paras.size(); i++) {
@@ -432,10 +447,15 @@ static void drawMain(const View &v, int rx, int rw, int top, int bottom) {
                 head += std::string(paint(bold)) + paint(p.channel == You ? cyan : magenta) + name + paint(reset);
             }
             const char *body = i + 1 == paras.size() ? paint(white) : "";
+            std::string text = p.text;
+            if (guess_at[i] != std::string::npos) text.insert(guess_at[i], paint(gray));
             std::vector<std::string> parts;
-            wrapText(p.text, rw - 2 - indent, &parts);
-            for (size_t k = 0; k < parts.size(); k++)
-                raw.push_back((k == 0 ? head : std::string(indent, ' ')) + body + parts[k]);
+            wrapText(text, rw - 2 - indent, &parts);
+            bool grey = false;
+            for (size_t k = 0; k < parts.size(); k++) {
+                raw.push_back((k == 0 ? head : std::string(indent, ' ')) + (grey ? paint(gray) : body) + parts[k]);
+                grey = grey || (color_on && parts[k].find(gray) != std::string::npos);
+            }
             if (i + 1 < paras.size()) raw.push_back("");
         }
         for (const std::string &p : v.tr->processed) {

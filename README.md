@@ -122,6 +122,10 @@ the same few seconds is dropped. Headphones avoid the problem entirely.
 
 ## Transcripts
 
+While someone is speaking, a grey guess of the sentence so far updates about
+once a second (`live`, `live_every`) and is replaced by the final text when
+they pause. Turn it off on slow machines if whisper falls behind.
+
 Lines from the same speaker with short pauses are joined into paragraphs, in
 the TUI and in the file. Timestamps are off unless you press `t` or set
 `timestamps = true`.
