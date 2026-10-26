@@ -1,4 +1,5 @@
 #include "earshot.h"
+#include <ggml-backend.h>
 
 static void usage() {
     printf(
@@ -10,9 +11,29 @@ static void usage() {
         "      --print          no tui and print the transcript to stdout\n"
         "      --file WAV       transcribe a wav file and exit\n"
         "      --set KEY=VALUE  override a config value for this run\n"
+        "      --save           write the --set values into the config file and exit\n"
+        "      --gpus           list gpus as number, kind, memory in MB and name, then exit\n"
         "      --send CMD       tell a running earshot to clip replay play process clear or quit\n"
-        "      --download NAME  fetch a whisper model like base.en small.en large-v3-turbo or silero\n",
+        "      --download NAME  fetch a whisper model like base.en small.en large-v3-turbo or silero, unless it is already there\n",
         configPath().c_str());
+}
+
+// gpus in the order whisper counts them for gpu_device, tab separated so scripts can read it
+static void quiet(enum ggml_log_level, const char *, void *) {}
+
+static int listGpus() {
+    ggml_log_set(quiet, nullptr);
+    int n = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+        size_t free_bytes = 0, total = 0;
+        ggml_backend_dev_memory(dev, &free_bytes, &total);
+        printf("%d\t%s\t%zu\t%s\n", n++, type == GGML_BACKEND_DEVICE_TYPE_GPU ? "gpu" : "igpu", total >> 20,
+               ggml_backend_dev_description(dev));
+    }
+    return 0;
 }
 
 static int download(const std::string &name) {
@@ -20,6 +41,11 @@ static int download(const std::string &name) {
         ? "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin"
         : "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-" + name + ".bin";
     std::string path = modelPath(name == "silero" ? "silero-v5.1.2" : name);
+    DirEntry have;
+    if (fileInfo(path, &have) && !have.dir && have.size > 0) {
+        printf("already have %s\n", path.c_str());
+        return 0;
+    }
     makeDirs(dataDir());
     printf("%s\n  -> %s\n", url.c_str(), path.c_str());
     if (runProcess({ "curl", "-fL", "--progress-bar", "-o", path + ".part", url }, nullptr) != 0) {
@@ -61,7 +87,7 @@ static int transcribeFile(const Config &cfg, const std::string &path) {
 int main(int argc, char **argv) {
     std::string config_path = configPath(), source_arg, mic_arg, send_arg, download_arg, file_arg;
     std::vector<std::string> overrides;
-    bool list = false, print = false;
+    bool list = false, print = false, save = false, gpus = false;
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         bool more = i + 1 < argc;
@@ -74,6 +100,8 @@ int main(int argc, char **argv) {
         else if (a == "--set" && more) overrides.push_back(argv[++i]);
         else if (a == "--list") list = true;
         else if (a == "--print") print = true;
+        else if (a == "--save") save = true;
+        else if (a == "--gpus") gpus = true;
         else {
             usage();
             return a == "-h" || a == "--help" ? 0 : 1;
@@ -85,6 +113,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (!download_arg.empty()) return download(download_arg);
+    if (gpus) return listGpus();
 
     Config cfg;
     std::string err;
@@ -95,6 +124,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "earshot: bad --set %s\n", o.c_str());
             return 1;
         }
+    }
+    if (save) {
+        for (const std::string &o : overrides) {
+            std::string key = o.substr(0, o.find('='));
+            configSet(config_path, key.c_str(), configGet(cfg, key));
+        }
+        printf("saved to %s\n", config_path.c_str());
+        return 0;
     }
     if (!source_arg.empty()) cfg.source = source_arg;
     if (!mic_arg.empty()) cfg.mic = mic_arg == "off" ? "" : mic_arg;

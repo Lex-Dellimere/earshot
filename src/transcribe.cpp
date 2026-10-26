@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cmath>
 #include <thread>
+#include <ggml-backend.h>
 #include <whisper.h>
 
 constexpr int vad_window = 512;               // 32 ms at 16 khz
@@ -306,11 +307,34 @@ static void worker(Worker *w) {
     if (fe_vad) frontendDestroy(fe_vad);
 }
 
-static whisper_context *loadModel(const Config &cfg, const std::string &model, std::string *err) {
+// free memory on the gpu whisper would use, counted the way whisper picks gpu_device, or -1 if unknown
+static int64_t gpuFreeBytes(int index) {
+    int n = 0;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        enum ggml_backend_dev_type type = ggml_backend_dev_type(dev);
+        if (type != GGML_BACKEND_DEVICE_TYPE_GPU && type != GGML_BACKEND_DEVICE_TYPE_IGPU) continue;
+        if (n++ != index) continue;
+        size_t free_bytes = 0, total = 0;
+        ggml_backend_dev_memory(dev, &free_bytes, &total);
+        return (int64_t)free_bytes;
+    }
+    return -1;
+}
+
+static whisper_context *loadModel(const Config &cfg, const std::string &model, std::string *err, std::string *note) {
     whisper_context_params cp = whisper_context_default_params();
     cp.use_gpu = cfg.gpu;
     cp.gpu_device = cfg.gpu_device;
     std::string path = modelPath(model);
+    // a full gpu makes whisper crash while allocating, so a model that will not fit runs on the cpu
+    DirEntry info;
+    int64_t free_bytes = cfg.gpu ? gpuFreeBytes(cfg.gpu_device) : -1;
+    if (free_bytes >= 0 && fileInfo(path, &info) && (int64_t)(info.size + info.size / 2 + (400 << 20)) > free_bytes) {
+        cp.use_gpu = false;
+        if (note) *note = "gpu " + std::to_string(cfg.gpu_device) + " has only " + std::to_string(free_bytes >> 20) +
+                          " MB free, so whisper runs on the cpu this time";
+    }
     whisper_context *ctx = whisper_init_from_file_with_params(path.c_str(), cp);
     if (!ctx) {
         bool named = model.find('/') == std::string::npos && model.find('\\') == std::string::npos;
@@ -321,7 +345,7 @@ static whisper_context *loadModel(const Config &cfg, const std::string &model, s
 
 Transcriber *transcriberStart(Ring *rings[channel_count], Transcript *tr, const Config &cfg, std::string *err, std::string *note) {
     whisper_log_set(quietLog, nullptr);
-    whisper_context *ctx = loadModel(cfg, cfg.model, err);
+    whisper_context *ctx = loadModel(cfg, cfg.model, err, note);
     if (!ctx) return nullptr;
     Transcriber *t = new Transcriber();
     t->tr = tr;
@@ -374,7 +398,7 @@ bool transcriberSetModel(Transcriber *t, const std::string &model) {
             std::lock_guard<std::mutex> lock(t->cfg_mu);
             cfg = t->cfg;
         }
-        whisper_context *ctx = loadModel(cfg, model, &err);
+        whisper_context *ctx = loadModel(cfg, model, &err, nullptr);
         if (!ctx) {
             std::lock_guard<std::mutex> lock(t->load_mu);
             t->load_error = err;

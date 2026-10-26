@@ -17,7 +17,38 @@ and linked statically.
 | global hotkeys | X11 grab; Wayland via `earshot --send` | `RegisterHotKey` |
 | control | FIFO in `$XDG_RUNTIME_DIR` | named pipe |
 
-## Build
+## install
+
+```sh
+git clone https://github.com/Lex-Dellimere/earshot && cd earshot && ./install.sh
+```
+
+`install.sh` works on linux (debian, ubuntu, fedora, arch, opensuse, alpine,
+void) and on windows from git bash or the msys2 shell. it:
+
+1. installs whatever build tools are missing with the system's package manager,
+   or msys2's mingw toolchain on windows (installing msys2 with winget if needed)
+2. builds earshot with vulkan when there is a gpu, and for the cpu otherwise,
+   then copies it to `~/.local/bin` (or `%LOCALAPPDATA%\Programs\earshot`)
+3. finds ollama, asks where it is if it can't, or installs it
+4. reads the gpus through `earshot --gpus` and picks the models that fit:
+
+   | hardware | whisper | ai |
+   |---|---|---|
+   | gpu with 7.5 GB or more | large-v3-turbo-q5_0, beam 5 | qwen3.5:9b |
+   | gpu with 5 to 7.5 GB | large-v3-turbo-q5_0, beam 5 | qwen3.5:4b |
+   | gpu with 3 to 5 GB | small.en-q5_1, beam 5 | qwen3.5:4b |
+   | integrated gpu | small.en-q5_1 | qwen3.5:4b |
+   | cpu only | small.en-q5_1 with 8+ threads, else base.en | qwen3.5:4b with 12 GB of ram, else off |
+
+5. downloads them and writes a config that uses them
+
+run it again whenever you like; finished steps are skipped. options:
+`--yes` answers every question, `--cpu` or `--gpu` forces the build type,
+`--no-ai` skips ollama, `--prefix DIR` changes where earshot goes, and
+`--dry-run` shows what it would do. on alpine, `apk add bash` first.
+
+## build by hand
 
 ```sh
 cmake -B build && cmake --build build -j       # linux
