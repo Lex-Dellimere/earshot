@@ -239,7 +239,11 @@ static void request(Llm *llm, const Job &job) {
 
     std::string body = "{\"model\":";
     jsonEscape(&body, m.name);
-    body += ",\"stream\":false,\"temperature\":0,\"messages\":[{\"role\":\"system\",\"content\":";
+    body += ",\"stream\":false,\"temperature\":0,";
+    // thinking models like qwen3 otherwise reason for a minute before every reply; ollama reads this
+    // on its openai endpoint while hosted apis can reject it, so it only goes to ollama's port
+    if (m.url.find(":11434") != std::string::npos) body += "\"reasoning_effort\":\"none\",";
+    body += "\"messages\":[{\"role\":\"system\",\"content\":";
     jsonEscape(&body, system);
     body += "},{\"role\":\"user\",\"content\":";
     jsonEscape(&body, user);
@@ -278,6 +282,11 @@ static void request(Llm *llm, const Job &job) {
     } else {
         size_t message = reply.find("\"message\"");
         if (message != std::string::npos && jsonString(reply, "content", message, &out)) {
+            // a model that still thinks out loud puts it in a block before the answer
+            for (size_t a; (a = out.find("<think>")) != std::string::npos;) {
+                size_t b = out.find("</think>", a);
+                out.erase(a, b == std::string::npos ? std::string::npos : b + 8 - a);
+            }
             size_t a = out.find_first_not_of(" \n");
             size_t b = out.find_last_not_of(" \n");
             out = a == std::string::npos || saysNothing(out) ? "" : out.substr(a, b - a + 1);

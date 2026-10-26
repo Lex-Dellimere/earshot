@@ -244,12 +244,29 @@ ai3 = ~/models/Mistral-7B-Instruct.Q4_K_M.gguf     # any gguf file, imported int
 For hosted endpoints, set `EARSHOT_API_KEY` in your environment. The key goes
 to curl through a private temp file, so it never shows in `ps`.
 
-Small local models are cautious editors rather than fixers. In testing,
-gemma3:4b returned lines unchanged, which is safe but rarely helps; qwen2.5:3b
-fixed "tour software" to "tor software" but also invented words. None of the
-3-4B models could recover a word whisper misheard badly. A larger model in a
-slot does better; otherwise accuracy comes from the whisper model and the
-noise stage.
+### Which AI model
+
+Scored on 30 lines: misheard words with known answers (homophones like
+by/buy and here/hear, "tour software" for Tor, "mike" for mic) and odd lines
+from real sessions that should be left alone. Each model got earshot's fix
+prompt and edit guard. Lower "broke" is better; a model that invents is worse
+than one that does nothing.
+
+| model | size | wrong words fixed | broke or invented | per batch, RTX 4070 |
+|---|---|---|---|---|
+| **qwen3.5:9b** | 6.6 GB | **8 of 14** | 2, both arguable (".onion", "Right to work") | 1.6 s |
+| qwen3:8b | 5.2 GB | 6 of 14 | 1 | 1.3 s |
+| qwen2.5:7b | 4.7 GB | 6 of 14 | 6 | 1.1 s |
+| gemma3:4b | 3.4 GB | 0 | 0 | 0.8 s |
+| llama3.1:8b | 4.9 GB | 1 | 8 ("Gemma 3 on Alama" became "Gemini 3 on Alexa") | 1.2 s |
+
+`qwen3.5:9b` is the pick on an 8 GB GPU (`ollama pull qwen3.5:9b`, then put it
+in a slot). qwen3 models think before answering, which took over a minute per
+batch; earshot turns that off for Ollama. `gemma3:4b` stays the default slot
+because it fits smaller GPUs and never makes things worse. Keep whisper on a
+different GPU or the CPU if the AI model and whisper together do not fit in
+video memory, or Ollama slows down by moving layers to the CPU. No AI model can
+bring back words whisper never heard.
 
 With the AI off (`ai = 0` or an empty instruction), nothing leaves your machine
 and nothing extra runs.
