@@ -4,17 +4,17 @@
 static void usage() {
     printf(
         "usage: earshot [options]\n"
-        "  -c, --config PATH    config file (default %s)\n"
-        "  -s, --source NAME    what you hear: system or part of an app or device name\n"
-        "  -m, --mic NAME       your voice: mic, part of a device name, or off\n"
+        "  -c, --config path    config file (default %s)\n"
+        "  -s, --source name    what you hear: system or part of an app or device name\n"
+        "  -m, --mic name       your voice: mic, part of a device name, or off\n"
         "      --list           list sources and exit\n"
         "      --print          no tui and print the transcript to stdout\n"
-        "      --file WAV       transcribe a wav file and exit\n"
-        "      --set KEY=VALUE  override a config value for this run\n"
+        "      --file wav       transcribe a wav file and exit\n"
+        "      --set key=value  override a config value for this run\n"
         "      --save           write the --set values into the config file and exit\n"
-        "      --gpus           list gpus as number, kind, memory in MB and name, then exit\n"
-        "      --send CMD       tell a running earshot to clip replay play process clear or quit\n"
-        "      --download NAME  fetch a whisper model like base.en small.en large-v3-turbo or silero, unless it is already there\n",
+        "      --gpus           list gpus as number, kind, memory in mb and name, then exit\n"
+        "      --send cmd       tell a running earshot to clip replay play process clear or quit\n"
+        "      --download name  fetch a whisper model like base.en small.en large-v3-turbo or silero, unless it is already there\n",
         configPath().c_str());
 }
 

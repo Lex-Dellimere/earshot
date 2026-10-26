@@ -232,7 +232,9 @@ static void request(Llm *llm, const Job &job) {
             "- Never rephrase, shorten, summarise, translate, censor or add anything, and never add names. Keep slang and swearing as spoken.\n"
             "- If a line is already right, return it unchanged.\n"
             "- Output only the numbered lines.";
-        if (!job.instruction.empty() && job.instruction != default_instruction) system += "\nAlso: " + job.instruction;
+        std::string ins = job.instruction;
+        for (char &c : ins) c = (char)tolower((unsigned char)c);
+        if (!ins.empty() && ins != default_instruction) system += "\nAlso: " + job.instruction;
         user = job.context.empty() ? "" : "Earlier lines, for context only:\n" + job.context + "\n\n";
         user += "Lines to correct:\n" + job.text;
     }

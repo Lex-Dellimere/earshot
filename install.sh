@@ -56,7 +56,7 @@ run() {
 ask() {
     local question="$1" default="${2:-y}" reply
     if [ "$YES" = 1 ] || [ ! -t 0 ]; then [ "$default" = y ]; return; fi
-    read -r -p "    $question [$( [ "$default" = y ] && echo Y/n || echo y/N )] " reply
+    read -r -p "    $question [$( [ "$default" = y ] && echo y/n || echo y/n )] " reply
     reply="${reply:-$default}"
     [[ "$reply" =~ ^[Yy] ]]
 }
@@ -67,7 +67,7 @@ OS=linux
 case "$(uname -s)" in
     Linux) ;;
     MINGW*|MSYS*|CYGWIN*) OS=windows ;;
-    Darwin) die "macOS is not supported: earshot captures audio with pipewire on linux and wasapi on windows" ;;
+    Darwin) die "macos is not supported: earshot captures audio with pipewire on linux and wasapi on windows" ;;
     *) die "unsupported system $(uname -s)" ;;
 esac
 
@@ -175,7 +175,7 @@ linux_has_vulkan_driver() {
 
 setup_linux() {
     detect_pm
-    step "Build tools"
+    step "build tools"
     if linux_missing_base; then
         [ -n "$PM" ] || die "no supported package manager found; install cmake, a c++ compiler, git, curl, pkg-config and the pipewire and x11 development files, then run this again"
         [ "$PM" = emerge ] && die "on gentoo, emerge dev-build/cmake dev-vcs/git media-video/pipewire x11-libs/libX11 net-misc/curl, then run this again"
@@ -190,7 +190,7 @@ setup_linux() {
 
     GPU_BUILD=0
     if [ "$FORCE_CPU" = 0 ] && { [ "$FORCE_GPU" = 1 ] || linux_has_gpu; }; then
-        step "GPU support"
+        step "gpu support"
         if linux_missing_vulkan; then
             info "a gpu was found; the vulkan build needs: $(packages vulkan)"
             if ask "install them for gpu speed?" y; then
@@ -217,7 +217,7 @@ setup_linux() {
 
 MSYS=""
 setup_windows() {
-    step "Build tools (MSYS2)"
+    step "build tools (msys2)"
     if [ -n "${MSYSTEM:-}" ] && have cygpath; then MSYS="$(cygpath -u "$(cygpath -w /)")"; fi
     [ -n "$MSYS" ] && [ -x "$MSYS/usr/bin/pacman" ] || MSYS=""
     if [ -z "$MSYS" ]; then
@@ -226,14 +226,14 @@ setup_windows() {
         done
     fi
     if [ -z "$MSYS" ]; then
-        info "earshot builds with the MinGW compiler from MSYS2, which is not installed"
-        have winget || die "install MSYS2 from https://www.msys2.org, then run this again"
-        ask "install MSYS2 with winget?" y || die "MSYS2 is needed to build earshot"
+        info "earshot builds with the mingw compiler from msys2, which is not installed"
+        have winget || die "install msys2 from https://www.msys2.org, then run this again"
+        ask "install msys2 with winget?" y || die "msys2 is needed to build earshot"
         run winget install -e --id MSYS2.MSYS2 --accept-package-agreements --accept-source-agreements
         MSYS=/c/msys64
-        [ "$DRY" = 1 ] || [ -x "$MSYS/usr/bin/pacman" ] || die "MSYS2 did not end up in C:\\msys64; run this again from the MSYS2 UCRT64 shell"
+        [ "$DRY" = 1 ] || [ -x "$MSYS/usr/bin/pacman" ] || die "msys2 did not end up in c:\\msys64; run this again from the msys2 ucrt64 shell"
     fi
-    ok "MSYS2 is at $MSYS"
+    ok "msys2 is at $MSYS"
     local pkgs="mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja mingw-w64-ucrt-x86_64-pkgconf git"
     GPU_BUILD=0
     if [ "$FORCE_CPU" = 0 ]; then
@@ -254,7 +254,7 @@ build_earshot() {
     [ "$OS" = windows ] && args+=(-G Ninja)
     # a whisper.cpp checkout next to the source saves cloning it again
     [ -f "$ROOT/.deps/whisper.cpp/CMakeLists.txt" ] && args+=("-DFETCHCONTENT_SOURCE_DIR_WHISPER=$ROOT/.deps/whisper.cpp")
-    step "Building earshot ($( [ "$GPU_BUILD" = 1 ] && echo "gpu, vulkan" || echo cpu ))"
+    step "building earshot ($( [ "$GPU_BUILD" = 1 ] && echo "gpu, vulkan" || echo cpu ))"
     info "the first build compiles whisper.cpp and can take several minutes"
     if ! run cmake -S "$ROOT" -B "$dir" "${args[@]}" || ! run cmake --build "$dir" -j "$CPUS"; then
         if [ "$GPU_BUILD" = 1 ]; then
@@ -266,7 +266,7 @@ build_earshot() {
         die "the build failed; the messages above say why"
     fi
 
-    step "Installing"
+    step "installing"
     local exe=earshot dest
     [ "$OS" = windows ] && exe=earshot.exe
     if [ -n "$PREFIX" ]; then dest="$PREFIX/bin"
@@ -281,12 +281,12 @@ build_earshot() {
     case ":$PATH:" in
         *":$dest:"*) ;;
         *) if [ "$OS" = windows ]; then
-               info "to run it from anywhere, add $(cygpath -w "$dest") to your PATH"
-               if have powershell.exe && ask "add it to your user PATH now?" y; then
+               info "to run it from anywhere, add $(cygpath -w "$dest") to your path"
+               if have powershell.exe && ask "add it to your user path now?" y; then
                    run powershell.exe -NoProfile -Command "\$p=[Environment]::GetEnvironmentVariable('Path','User'); if (\$p -notlike '*$(cygpath -w "$dest")*') { [Environment]::SetEnvironmentVariable('Path', (\$p.TrimEnd(';') + ';$(cygpath -w "$dest")'), 'User') }"
                fi
            else
-               info "$dest is not on your PATH; add this to your shell profile: export PATH=\"$dest:\$PATH\""
+               info "$dest is not on your path; add this to your shell profile: export PATH=\"$dest:\$PATH\""
            fi ;;
     esac
 }
@@ -295,12 +295,12 @@ build_earshot() {
 
 WHISPER="" BEAM=1 GPU_ON=false GPU_DEVICE=0 AI_MODEL="" HARDWARE=""
 choose_models() {
-    step "Choosing models for this machine"
+    step "choosing models for this machine"
     local best=-1 best_mb=0 igpu=-1 n kind mb name ram
     if [ "$GPU_BUILD" = 1 ] && [ -x "$BIN" ]; then
         while IFS=$'\t' read -r n kind mb name; do
             [ -n "$n" ] || continue
-            info "gpu $n: $name ($kind, $(((mb + 512) / 1024)) GB)"
+            info "gpu $n: $name ($kind, $(((mb + 512) / 1024)) gb)"
             if [ "$kind" = gpu ] && [ "$mb" -gt "$best_mb" ]; then best=$n best_mb=$mb; fi
             if [ "$kind" = igpu ] && [ "$igpu" -lt 0 ]; then igpu=$n; fi
         done < <("$BIN" --gpus 2>/dev/null | tr -d '\r')
@@ -308,8 +308,8 @@ choose_models() {
     ram=$(ram_gb)
     if [ "$best" -ge 0 ] && [ "$best_mb" -ge 3000 ]; then
         GPU_ON=true GPU_DEVICE=$best BEAM=5
-        HARDWARE="dedicated gpu with $(((best_mb + 512) / 1024)) GB"
-        # whisper large-v3-turbo needs about 0.9 GB beside the ai model, measured on an rtx 4070
+        HARDWARE="dedicated gpu with $(((best_mb + 512) / 1024)) gb"
+        # whisper large-v3-turbo needs about 0.9 gb beside the ai model, measured on an rtx 4070
         if [ "$best_mb" -ge 7500 ]; then WHISPER=large-v3-turbo-q5_0 AI_MODEL=qwen3.5:9b
         elif [ "$best_mb" -ge 5000 ]; then WHISPER=large-v3-turbo-q5_0 AI_MODEL=qwen3.5:4b
         else WHISPER=small.en-q5_1 AI_MODEL=qwen3.5:4b
@@ -319,7 +319,7 @@ choose_models() {
         HARDWARE="integrated or small gpu"
         WHISPER=small.en-q5_1 AI_MODEL=qwen3.5:4b
     else
-        HARDWARE="cpu only, $CPUS threads, $ram GB of memory"
+        HARDWARE="cpu only, $CPUS threads, $ram gb of memory"
         if [ "$CPUS" -ge 8 ]; then WHISPER=small.en-q5_1; else WHISPER=base.en; fi
         if [ "$ram" -ge 12 ]; then AI_MODEL=qwen3.5:4b; else AI_MODEL=""; fi
     fi
@@ -364,14 +364,14 @@ install_ollama() {
 }
 
 setup_ollama() {
-    step "Ollama (runs the ai that fixes misheard words)"
+    step "ollama (runs the ai that fixes misheard words)"
     if find_ollama; then
         ok "found $OLLAMA"
     else
         info "ollama was not found"
         local reply=""
         if [ "$YES" = 0 ] && [ -t 0 ]; then
-            read -r -p "    path to ollama, Enter to install it, or 'skip' for no ai: " reply
+            read -r -p "    path to ollama, enter to install it, or 'skip' for no ai: " reply
         fi
         if [ "$reply" = skip ]; then
             AI_MODEL=""; warn "skipping the ai"; return
@@ -410,13 +410,13 @@ trap cleanup EXIT
 # ---------------------------------------------------------------- whisper models and config
 
 download_models() {
-    step "Whisper models"
+    step "whisper models"
     run "$BIN" --download "$WHISPER"
     run "$BIN" --download silero
 }
 
 write_config() {
-    step "Config"
+    step "config"
     local config sets=() slot="" free="" n value
     config="$("$BIN" --help 2>/dev/null | sed -n 's/.*config file (default \(.*\))/\1/p' | tr -d '\r')" || true
     [ "$OS" = windows ] && [ -n "$config" ] && config="$(cygpath -u "$config")"
@@ -448,7 +448,7 @@ choose_models
 download_models
 write_config
 
-step "Done"
+step "done"
 ok "run: earshot"
 info "keys: w whisper model, a ai model, s settings, ? all keys"
 [ -n "$AI_MODEL" ] || info "the ai is off; run this again without --no-ai, or set it up later with the a key"

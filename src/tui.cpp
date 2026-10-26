@@ -69,7 +69,7 @@ int tuiReadKey(std::string *text) {
             }
             used = end + 1;
             std::string params = keybuf.substr(2, end - 2);
-            // sgr mouse reports look like <button;x;y and end in M for press or m for release
+            // sgr mouse reports look like <button;x;y and end in m, upper case for a press and lower case for a release
             if (!params.empty() && params[0] == '<') {
                 int b = 0, x = 0, y = 0;
                 sscanf(params.c_str() + 1, "%d;%d;%d", &b, &x, &y);
@@ -316,7 +316,7 @@ static void drawTitle(const View &v, int w) {
         segs.push_back({ v.active[ch]->label + state + paint(white), 3, Hit::None });
     }
     if (v.clip_seconds > 0)
-        segs.push_back({ std::string(paint(clip_badge)) + " ● CLIP " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1, Hit::None });
+        segs.push_back({ std::string(paint(clip_badge)) + " ● clip " + minutes(v.clip_seconds) + " " + paint(reset) + paint(bar_bg) + paint(white), -1, Hit::None });
     if (v.playback_left > 0)
         segs.push_back({ std::string(paint(play_badge)) + " ▶ " + minutes(v.playback_left) + " " + paint(reset) + paint(bar_bg) + paint(white), -1, Hit::None });
     segs.push_back({ "whisper " + std::string(v.model_loading ? std::string(paint(yellow)) + "loading " + paint(white) : "") + v.model +
@@ -360,7 +360,7 @@ static void drawTitle(const View &v, int w) {
 static void drawSources(const View &v, int col, int top, int width, int rows) {
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    cell(" Sources" + std::string(paint(normal)) + paint(gray) + (v.overlay == Overlay::Sources ? "  ↑↓ Enter pick  Esc close" : "  ↑↓ Enter"), width);
+    cell(" sources" + std::string(paint(normal)) + paint(gray) + (v.overlay == Overlay::Sources ? "  ↑↓ enter pick  esc close" : "  ↑↓ enter"), width);
     screen += paint(reset);
     int room = rows - 1;
     int first = v.selected >= room ? v.selected - room + 1 : 0;
@@ -418,11 +418,11 @@ static void drawHelp(const View &v, int col, int top, int width, int rows) {
         lines.push_back(std::string(paint(yellow)) + paint(bold) + k + paint(normal) + paint(fg_default) + what);
     }
     lines.push_back("");
-    lines.push_back(std::string(paint(gray)) + "The mouse wheel scrolls, and clicking a source, a list row,");
+    lines.push_back(std::string(paint(gray)) + "the mouse wheel scrolls, and clicking a source, a list row,");
     lines.push_back(std::string(paint(gray)) + "or whisper or ai in the title bar picks it.");
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    cell(" Keys" + std::string(paint(normal)) + paint(gray) + "  any key closes", width);
+    cell(" keys" + std::string(paint(normal)) + paint(gray) + "  any key closes", width);
     screen += paint(reset);
     drawText(top + 1, col, width, rows - 1, lines, (int)lines.size() > rows - 1 ? (int)lines.size() - (rows - 1) : 0, "");
 }
@@ -431,7 +431,7 @@ static void drawHelp(const View &v, int col, int top, int width, int rows) {
 static void drawList(const View &v, int col, int top, int width, int rows) {
     moveTo(top, col);
     screen += std::string(paint(bold)) + paint(cyan);
-    cell(" " + v.list_title + std::string(paint(normal)) + paint(gray) + "  ↑↓ choose  Enter pick  Esc back", width);
+    cell(" " + v.list_title + std::string(paint(normal)) + paint(gray) + "  ↑↓ choose  enter pick  esc back", width);
     screen += paint(reset);
     std::vector<std::string> help;
     wrapText(v.list_hint, width - 3, &help);
@@ -540,12 +540,12 @@ static int drawMain(const View &v, int rx, int rw, int top, int bottom) {
     int max_scroll = (int)raw.size() > rows ? (int)raw.size() - rows : 0;
     int scroll = std::min(v.scroll, max_scroll);
     moveTo(row++, rx);
-    std::string where = scroll ? "↑ " + std::to_string(scroll) + (scroll == 1 ? " line" : " lines") + " up · End or wheel down to follow" : v.transcript_path;
-    cell(std::string(paint(bold)) + paint(cyan) + " Transcript" + paint(reset) + paint(gray) + "  " + where + paint(reset), rw);
+    std::string where = scroll ? "↑ " + std::to_string(scroll) + (scroll == 1 ? " line" : " lines") + " up · end or wheel down to follow" : v.transcript_path;
+    cell(std::string(paint(bold)) + paint(cyan) + " transcript" + paint(reset) + paint(gray) + "  " + where + paint(reset), rw);
     row = drawText(row, rx, rw, rows, raw, scroll, "");
     if (notes_rows > 0) {
         moveTo(row++, rx);
-        cell(std::string(paint(bold)) + paint(cyan) + " AI notes" + paint(reset) + paint(gray) + "  " + v.ai + paint(reset), rw);
+        cell(std::string(paint(bold)) + paint(cyan) + " ai notes" + paint(reset) + paint(gray) + "  " + v.ai + paint(reset), rw);
         if (!notes.empty() && notes.back().empty()) notes.pop_back();
         drawText(row, rx, rw, notes_rows - 1, notes, 0, paint(green));
     }
@@ -619,7 +619,7 @@ int tuiDraw(const View &v) {
             while (!field.empty() && ((unsigned char)field[0] & 0xC0) == 0x80);
         }
         cell(" " + std::string(paint(bold)) + v.edit_title + paint(normal) + " " + paint(yellow) + field + paint(gray) +
-             "  Enter save  Esc cancel  Ctrl-U clear", w);
+             "  enter save  esc cancel  ctrl-u clear", w);
     } else if (!v.message.empty()) {
         screen += paint(v.message_error ? error_bg : info_bg);
         cell(" " + v.message, w);

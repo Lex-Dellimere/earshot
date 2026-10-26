@@ -18,13 +18,13 @@ constexpr int channel_count = 2;
 // config
 
 constexpr const char *default_instruction =
-    "Fix words that were clearly misheard and add punctuation. Keep the speaker's own wording and the speaker names.";
+    "fix words that were clearly misheard and add punctuation. keep the speaker's own wording and the speaker names.";
 
 struct Config {
     std::string source = "system";
     std::string mic = "mic";
-    std::string them_label = "Them";
-    std::string you_label = "You";
+    std::string them_label = "them";
+    std::string you_label = "you";
     std::string model = "base.en";
     std::string model_paths;
     std::string language = "en";

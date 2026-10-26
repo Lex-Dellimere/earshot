@@ -177,8 +177,8 @@ static void listDevices(IMMDeviceEnumerator *en, EDataFlow flow, std::vector<Sou
 
 static void refreshSources(Audio *a) {
     std::vector<Source> list;
-    list.push_back({ SourceKind::System, 0, "system", "System (all output)" });
-    list.push_back({ SourceKind::Mic, 0, "mic", "Mic (default input)" });
+    list.push_back({ SourceKind::System, 0, "system", "system (all output)" });
+    list.push_back({ SourceKind::Mic, 0, "mic", "mic (default input)" });
     if (IMMDeviceEnumerator *en = enumerator()) {
         listApps(en, &list);
         listDevices(en, eRender, &list);

@@ -73,7 +73,7 @@ static bool isNoise(const std::string &text) {
 // mean token probability a one or two word line needs; real short replies scored 0.5 to 0.7 in tests
 constexpr float short_min_p = 0.35f;
 
-// whisper makes up short filler like I or Oh from noise and is unsure when it does
+// whisper makes up short filler like i or oh from noise and is unsure when it does
 static bool unsure(whisper_context *ctx, int seg, const std::string &text) {
     if (plainWords(text).size() > 2) return false;
     whisper_token eot = whisper_token_eot(ctx);
@@ -333,7 +333,7 @@ static whisper_context *loadModel(const Config &cfg, const std::string &model, s
     if (free_bytes >= 0 && fileInfo(path, &info) && (int64_t)(info.size + info.size / 2 + (400 << 20)) > free_bytes) {
         cp.use_gpu = false;
         if (note) *note = "gpu " + std::to_string(cfg.gpu_device) + " has only " + std::to_string(free_bytes >> 20) +
-                          " MB free, so whisper runs on the cpu this time";
+                          " mb free, so whisper runs on the cpu this time";
     }
     whisper_context *ctx = whisper_init_from_file_with_params(path.c_str(), cp);
     if (!ctx) {

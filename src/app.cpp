@@ -237,7 +237,7 @@ void App::buildRows() {
         Source cur;
         bool on = active(ch, &cur);
         std::string status = on ? audioStatus(audio, ch) : "";
-        rows.push_back({ ch, true, false, false, SourceKind::System, ch == Them ? "Hear  (" + label(ch) + ")" : "Mic  (" + label(ch) + ")", "" });
+        rows.push_back({ ch, true, false, false, SourceKind::System, ch == Them ? "hear  (" + label(ch) + ")" : "mic  (" + label(ch) + ")", "" });
         row_sources.push_back({});
         bool listed = false;
         for (const Source &src : sources) {
@@ -308,16 +308,16 @@ void App::openPicker(Pick which) {
     if (which == Pick::Whisper) {
         for (const ModelChoice &c : modelChoices(cfg)) {
             char size[32];
-            snprintf(size, sizeof size, "%5.0f MB  ", c.size / 1e6);
+            snprintf(size, sizeof size, "%5.0f mb  ", c.size / 1e6);
             bool current = modelPath(c.value) == modelPath(cfg.model);
             if (current) pick_selected = (int)pick_rows.size();
             pick_rows.push_back({ false, c.label, size + modelNote(c.label), current, false });
             pick_values.push_back(c.value);
         }
-        pick_rows.push_back({ false, "Type the path to a model file...", "", false, false });
+        pick_rows.push_back({ false, "type the path to a model file...", "", false, false });
         pick_values.push_back("");
     } else {
-        pick_rows.push_back({ false, "Off", "", cfg.ai == 0, false });
+        pick_rows.push_back({ false, "off", "", cfg.ai == 0, false });
         pick_values.push_back("0");
         for (int n = 1; n <= 9; n++) {
             if (cfg.ai_slots[n - 1].empty()) continue;
@@ -327,7 +327,7 @@ void App::openPicker(Pick which) {
             pick_rows.push_back({ false, std::to_string(n) + "  " + m.label, where, cfg.ai == n, false });
             pick_values.push_back(std::to_string(n));
         }
-        pick_rows.push_back({ false, "Change the slots or the instruction...", "", false, false });
+        pick_rows.push_back({ false, "change the slots or the instruction...", "", false, false });
         pick_values.push_back("settings");
     }
     overlay = Overlay::Picker;
@@ -601,14 +601,14 @@ void App::flushAll() {
 
 // most useful first because the footer shows only what fits
 std::vector<std::pair<std::string, std::string>> App::help(bool wide) {
-    if (overlay == Overlay::Settings) return { { "↑↓", "choose" }, { "←→", "change" }, { "Enter", "edit" }, { "Esc", "back" } };
-    if (overlay == Overlay::Picker) return { { "↑↓", "choose" }, { "Enter", "pick" }, { "Esc", "back" } };
+    if (overlay == Overlay::Settings) return { { "↑↓", "choose" }, { "←→", "change" }, { "enter", "edit" }, { "esc", "back" } };
+    if (overlay == Overlay::Picker) return { { "↑↓", "choose" }, { "enter", "pick" }, { "esc", "back" } };
     return {
-        { cfg.key_quit, "quit" }, { wide ? "↑↓ Enter" : "Tab", wide ? "source" : "sources" }, { cfg.key_model, "whisper model" },
-        { cfg.key_ai, "ai model" }, { cfg.key_settings, "settings" }, { "PgUp/Dn", "scroll" }, { cfg.key_clip, "clip" },
+        { cfg.key_quit, "quit" }, { wide ? "↑↓ enter" : "tab", wide ? "source" : "sources" }, { cfg.key_model, "whisper model" },
+        { cfg.key_ai, "ai model" }, { cfg.key_settings, "settings" }, { "pgup/pgdn", "scroll" }, { cfg.key_clip, "clip" },
         { cfg.key_replay, "replay" }, { cfg.key_play, "play" }, { cfg.key_instruction, "instruction" },
         { cfg.key_process, "process" }, { cfg.key_timestamps, "times" }, { cfg.key_folder, "folder" }, { cfg.key_clear, "clear" },
-        { "Home/End", "top / follow" },
+        { "home/end", "top / follow" },
     };
 }
 
@@ -809,9 +809,9 @@ std::string App::emptyHint() {
         std::string what = s.label + (status == "capturing" ? "" : status == "idle" ? " (idle, nothing is playing)" : " (" + status + ")");
         parts += (parts.empty() ? "" : " and ") + what;
     }
-    if (parts.empty()) return "Nothing is being listened to. Pick something under Hear or Mic on the left" +
-                              std::string(tuiWide() ? "." : " (press Tab).");
-    return "Listening to " + parts + ". Text appears here as soon as someone speaks.";
+    if (parts.empty()) return "nothing is being listened to. pick something under hear or mic on the left" +
+                              std::string(tuiWide() ? "." : " (press tab).");
+    return "listening to " + parts + ". text appears here as soon as someone speaks.";
 }
 
 void App::draw() {
@@ -854,7 +854,7 @@ void App::draw() {
     v.message_error = message_error;
     v.editing = editing != Edit::None;
     v.edit = edit;
-    v.edit_title = editing == Edit::Instruction ? "AI instruction:" : editing == Edit::ModelPath ? "Model file:" :
+    v.edit_title = editing == Edit::Instruction ? "ai instruction:" : editing == Edit::ModelPath ? "model file:" :
                    editing == Edit::Setting ? std::string(settingsList()[setting].label) + ":" : "";
     v.help = help(tuiWide());
     v.overlay = overlay;
@@ -862,18 +862,18 @@ void App::draw() {
     v.labels = labels();
     v.transcript_path = !cfg.save_transcript ? "not saved" : raw_file ? shortPath(transcript_path) : "saving to " + shortPath(expandPath(cfg.transcript_dir));
     if (overlay == Overlay::Settings) {
-        v.list_title = "Settings";
+        v.list_title = "settings";
         for (const Setting &st : settingsList())
             v.list.push_back({ st.kind == Setting::Header, st.label, st.kind == Setting::Header ? "" : settingDisplay(cfg, st), false, st.restart });
         v.list_selected = setting;
         v.list_hint = settingsList()[setting].help;
     } else if (overlay == Overlay::Picker) {
-        v.list_title = pick == Pick::Whisper ? "Whisper model" : "AI model";
+        v.list_title = pick == Pick::Whisper ? "whisper model" : "ai model";
         v.list = pick_rows;
         v.list_selected = pick_selected;
         v.list_hint = pick == Pick::Whisper
-            ? "Bigger models make fewer mistakes but need more time per chunk. The new model loads in the background and takes over when ready."
-            : "The AI corrects misheard words in the transcript. Slots are set in settings: an ollama name, a name @ url, or a .gguf file.";
+            ? "bigger models make fewer mistakes but need more time per chunk. the new model loads in the background and takes over when ready."
+            : "the ai corrects misheard words in the transcript. slots are set in settings: an ollama name, a name @ url, or a .gguf file.";
     }
     max_scroll = tuiDraw(v);
     if (scroll > max_scroll) scroll = max_scroll;

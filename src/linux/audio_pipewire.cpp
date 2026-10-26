@@ -204,8 +204,8 @@ void audioClose(Audio *a) {
 
 std::vector<Source> audioSources(Audio *a) {
     std::vector<Source> out;
-    out.push_back({ SourceKind::System, 0, "system", "System (all output)" });
-    out.push_back({ SourceKind::Mic, 0, "mic", "Mic (default input)" });
+    out.push_back({ SourceKind::System, 0, "system", "system (all output)" });
+    out.push_back({ SourceKind::Mic, 0, "mic", "mic (default input)" });
     pw_thread_loop_lock(a->loop);
     for (const Source &s : a->nodes) {
         if (s.kind != SourceKind::App) continue;

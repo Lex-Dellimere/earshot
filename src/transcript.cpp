@@ -112,7 +112,7 @@ std::vector<Paragraph> transcriptParagraphs(const Transcript *tr, size_t from, d
     return out;
 }
 
-// pulls "N. text" lines out of an ai reply, dropping any speaker the model repeated
+// pulls "n. text" lines out of an ai reply, dropping any speaker the model repeated
 std::vector<std::pair<int, std::string>> aiNumberedLines(const std::string &reply) {
     std::vector<std::pair<int, std::string>> out;
     size_t start = 0;
