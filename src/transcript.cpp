@@ -138,6 +138,10 @@ std::vector<std::pair<int, std::string>> aiNumberedLines(const std::string &repl
         size_t colon = text.find(": ");
         if (colon != std::string::npos && colon < 16 && text.substr(0, colon).find(' ') == std::string::npos) text = text.substr(colon + 2);
         while (!text.empty() && (text.back() == ' ' || text.back() == '\r')) text.pop_back();
+        // models like to swap in curly quotes, which would read as a change to every contraction
+        static const char *curly[][2] = { { "\xe2\x80\x99", "'" }, { "\xe2\x80\x98", "'" }, { "\xe2\x80\x9c", "\"" }, { "\xe2\x80\x9d", "\"" } };
+        for (const auto &c : curly)
+            for (size_t p; (p = text.find(c[0])) != std::string::npos;) text.replace(p, 3, c[1]);
         if (!text.empty()) out.push_back({ n, text });
     }
     return out;

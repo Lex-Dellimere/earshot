@@ -262,6 +262,7 @@ static void testAiFix() {
     auto lines = aiNumberedLines("Here you go:\n1. And so my fellow Americans!\n2. (Them) Ask not.\n 3) Them: what your country\n**4.** skip\n5.\n");
     CHECK_EQ(lines.size(), (size_t)4);
     CHECK_EQ(lines[3].second, std::string("skip"));
+    CHECK_EQ(aiNumberedLines("1. it\xe2\x80\x99" "s \xe2\x80\x9c" "fine\xe2\x80\x9d")[0].second, std::string("it's \"fine\""));
     CHECK_EQ(lines[0].first, 1);
     CHECK_EQ(lines[0].second, std::string("And so my fellow Americans!"));
     CHECK_EQ(lines[1].second, std::string("Ask not."));
